@@ -8,7 +8,7 @@ JAR (Janitor AI Ripper) — extract lorebooks and characters from JanitorAI, bot
 
 - **A Windows / Linux / Mac machine with a GUI.** JAR launches a full browser window, so it won't run without a GUI.
 - JAR **won't run on Termux** out of the box, and **no support for Termux will be provided.**
-- For mobile extraction, try [GlazeFlutter](https://github.com/hydall/GlazeFlutter) — an LLM roleplay frontend in development. JAR tools are built into it by default.
+- For mobile extraction, try [Glaze](https://github.com/hydall/Glaze) — an LLM roleplay frontend in development. JAR tools are built into it by default.
 
 ## Setup & run
 
