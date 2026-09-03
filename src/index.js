@@ -705,9 +705,20 @@ app.get('/api/status', async (req, res) => {
 // the window, we leave it open so the user can finish.
 app.post('/api/login', async (req, res) => {
   try {
-    const data = await browser.withBrowser((ctx) => openLogin(ctx),
-      { mode: 'visible', keepOpen: true });
-    if (data.loggedIn) await browser.dispose();
+    const data = await browser.withBrowser(async (ctx) => {
+      const login = await openLogin(ctx);
+      if (!login.loggedIn) return login;
+
+      // Confirm the persistent profile survives the close/reopen transition used
+      // by extraction, rather than reporting success from the login window alone.
+      await browser.dispose();
+      try {
+        const freshContext = await browser.ensureStarted('background');
+        return await getStatus(freshContext);
+      } finally {
+        await browser.dispose();
+      }
+    }, { mode: 'visible', keepOpen: true });
     res.json(data);
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
