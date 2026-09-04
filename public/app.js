@@ -89,7 +89,7 @@ function stripHtml(s) {
   return String(s || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-// ---- context-source blocks (key-inference context, shown inline) ----
+// ---- source-text blocks (trigger text and LLM key-inference context) ----
 // The per-source text the build LLM will receive, derived from the selected
 // record. Each is independently toggled AND now revealed in its own block so the
 // user sees exactly what gets sent (the card prompt, catalog/scenario/greetings,
@@ -107,8 +107,33 @@ function contextPartsFromRec(rec) {
   };
 }
 
-// Fill the content panes of every context block under `rootId` (`exSources` /
-// `useSources`). A source with no content is shown disabled with a
+function lorebookNamesFromRec(rec) {
+  const names = new Set();
+  (rec.publicLorebooks || []).forEach((book) => {
+    const title = String((book && book.title) || '').trim();
+    if (title) names.add(title);
+  });
+  ((rec.meta && rec.meta.scripts) || []).forEach((script) => {
+    const title = String((script && script.title) || '').trim();
+    if (title) names.add(title);
+  });
+  return [...names].join('\n');
+}
+
+function triggerPartsFromRec(rec, settings) {
+  const ctx = (rec && rec.context) || {};
+  const ch = (rec && rec.character) || {};
+  return {
+    card: String(ch.description || '').trim(),
+    catalog: String(ctx.description || '').trim(),
+    scenario: String(ctx.scenario || '').trim(),
+    greetings: String(ctx.greetings || '').trim(),
+    lorebookNames: lorebookNamesFromRec(rec),
+    savedDefault: String((settings && settings.defaultLoreTriggerText) || '').trim(),
+  };
+}
+
+// Fill the content panes of every source block under `rootId`. A source with no content is shown disabled with a
 // "Content is empty" hint and can't be selected or expanded. The character card
 // is the exception — it's recovered during extraction, so it stays selectable
 // and shows a placeholder until then.
@@ -118,7 +143,7 @@ function fillContextBlocks(rootId, parts) {
   const pending = []; // { len, content } — token counts filled in one batch below
   root.querySelectorAll('.ctx-block[data-ctx]').forEach((block) => {
     const key = block.dataset.ctx;
-    if (key === 'extra') return; // editable custom text — handled by its checkbox
+    if (key === 'extra' || key === 'custom') return; // editable custom text — handled by its checkbox
     const content = (parts && parts[key]) || '';
     const isCard = key === 'card';
     const disabled = !content && !isCard;
@@ -167,6 +192,39 @@ function wireContextExpand(rootId) {
     const nowHidden = pre.classList.toggle('hidden');
     block.classList.toggle('open', !nowHidden);
   });
+}
+
+function triggerSelection() {
+  return {
+    card: $('triggerCard').checked,
+    siteDescription: $('triggerSiteDescription').checked,
+    scenario: $('triggerScenario').checked,
+    greetings: $('triggerGreetings').checked,
+    lorebookNames: $('triggerLorebookNames').checked,
+    savedDefault: $('triggerSavedDefault').checked,
+    custom: $('triggerCustom').checked,
+    customText: $('loreTriggerText').value,
+  };
+}
+
+function previewTriggerText() {
+  const selected = triggerSelection();
+  const parts = state.triggerParts || {};
+  const sources = [
+    [selected.card, parts.card || `[${t('ctxCardPending')}]`],
+    [selected.siteDescription, parts.catalog],
+    [selected.scenario, parts.scenario],
+    [selected.greetings, parts.greetings],
+    [selected.lorebookNames, parts.lorebookNames],
+    [selected.savedDefault, parts.savedDefault],
+    [selected.custom, selected.customText.trim()],
+  ];
+  $('triggerPreviewPre').textContent = sources
+    .filter(([enabled, text]) => enabled && text)
+    .map(([, text]) => text)
+    .join('\n\n');
+  $('triggerPreview').classList.remove('hidden');
+  $('triggerPreview').open = true;
 }
 
 // ---- inline SVG icons (sprite defined in index.html) ----
@@ -218,13 +276,17 @@ async function selectCapture(id) {
   $('detailEmpty').classList.remove('hidden');
   $('detailEmpty').textContent = t('loading');
 
-  const rec = await api(`/api/captures/${id}`);
+  const [rec, settings] = await Promise.all([
+    api(`/api/captures/${id}`),
+    api('/api/settings').catch(() => ({})),
+  ]);
   $('detailEmpty').classList.add('hidden');
   $('detailBody').classList.remove('hidden');
 
-  // Reveal what each context source will send (both the extract and build sets).
+  // Reveal separately what is sent to JanitorAI and what is later sent to the LLM.
   state.contextParts = contextPartsFromRec(rec);
-  fillContextBlocks('exSources', state.contextParts);
+  state.triggerParts = triggerPartsFromRec(rec, settings);
+  fillContextBlocks('triggerSources', state.triggerParts);
   fillContextBlocks('useSources', state.contextParts);
 
   const charEl = $('metaChar');
@@ -295,9 +357,8 @@ async function selectCapture(id) {
   updateLorebookEmpty();
 }
 
-// Decide which lorebook controls to show. Inspected records offer an "extract"
-// block when the character has closed lorebooks; captured records show the build
-// section. A plain "no lorebook" notice appears when there's nothing at all.
+// Closed lorebooks always show both their trigger controls and LLM configuration.
+// Building itself remains disabled until a prompt has been captured.
 function updateLorebookEmpty() {
   const books = state.publicBooks || [];
   const openCount = books.filter((b) => b.accessible).length;
@@ -317,16 +378,19 @@ function updateLorebookEmpty() {
   $('dlExtractedRow').classList.toggle('hidden', adv);
   $('extractedDivider').classList.toggle('hidden', adv);
 
-  if (!captured) {
-    // Inspection: offer on-demand extraction when there's a closed lorebook.
-    $('loreExtractBlock').classList.toggle('hidden', !hasClosed);
-    $('buildBlock').classList.add('hidden');
-  } else {
-    $('loreExtractBlock').classList.add('hidden');
-    // With only public lorebooks (and nothing extracted) there's nothing to build.
-    const onlyPublic = openCount > 0 && closedCount === 0 && !hasEntries;
-    $('buildBlock').classList.toggle('hidden', onlyPublic);
-  }
+  $('loreExtractBlock').classList.toggle('hidden', !hasClosed);
+  // With only public lorebooks (and nothing extracted) there's nothing to build.
+  const onlyPublic = openCount > 0 && closedCount === 0 && !hasEntries;
+  $('buildBlock').classList.toggle('hidden', onlyPublic);
+  $('buildPendingHint').classList.toggle('hidden', captured);
+  syncBuildActions();
+  const extractLabel = captured ? 'btnReextractLore' : 'btnExtractLore';
+  $('loreExtractBtn').querySelector('span').textContent = t(extractLabel);
+}
+
+function syncBuildActions() {
+  $('buildBtn').disabled = !state.captured;
+  $('previewBtn').disabled = !state.captured;
 }
 
 // ---- extraction breakdown (what was pulled from which request, what was cut) ----
@@ -552,7 +616,7 @@ function stopBuildTimer(label) {
 }
 
 async function previewPrompt() {
-  if (!state.selected) return;
+  if (!state.selected || !state.captured) return;
   $('previewBtn').disabled = true;
   try {
     const r = await api('/api/extract-preview', {
@@ -565,12 +629,12 @@ async function previewPrompt() {
   } catch (e) {
     setStatus($('buildStatus'), 'x', e.message);
   } finally {
-    $('previewBtn').disabled = false;
+    syncBuildActions();
   }
 }
 
 async function runBuild() {
-  if (!state.selected) return;
+  if (!state.selected || !state.captured) return;
   // The lorebook build needs an OpenAI-compatible LLM. If it isn't configured,
   // don't fail with a cryptic server error — poke the user into settings.
   const cfg = await api('/api/settings').catch(() => null);
@@ -600,8 +664,7 @@ async function runBuild() {
     setStatus($('buildStatus'), 'x', e.message);
     stopBuildTimer(t('buildFailed'));
   } finally {
-    $('buildBtn').disabled = false;
-    $('previewBtn').disabled = false;
+    syncBuildActions();
   }
 }
 
@@ -919,42 +982,21 @@ async function runCardExtract() {
   }
 }
 
-// Lorebook tab "extract": run the generateAlpha capture for the closed lorebook,
-// then copy the chosen context options (incl. custom text) into build-with-LLM so
-// the user can build right away.
+// Lorebook tab "extract": run the generateAlpha capture for the closed lorebook.
+// Trigger sources are intentionally independent from the later LLM build context.
 async function runLoreExtract() {
   if (!state.selected) return;
   const id = state.selected;
-  const opt = {
-    card: $('exCard').checked,
-    catalog: $('exCatalog').checked,
-    scenario: $('exScenario').checked,
-    greetings: $('exGreetings').checked,
-    lorebookDescs: $('exLorebookDescs').checked,
-    extra: $('exExtra').checked,
-    extraText: $('exExtraText').value,
-  };
+  const trigger = triggerSelection();
   $('loreExtractBtn').disabled = true;
   $('loreExtractStatus').innerHTML = `<span class="extracting">${t('extracting')}</span>`;
   try {
     await api('/api/capture', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id }),
+      body: JSON.stringify({ id, force: state.captured, trigger }),
     });
-    await selectCapture(id); // reloads as captured → build section appears
-    // Carry the selected context into build-with-LLM.
-    $('useCard').checked = opt.card;
-    $('useCatalog').checked = opt.catalog;
-    $('useScenario').checked = opt.scenario;
-    $('useGreetings').checked = opt.greetings;
-    $('useLorebookDescs').checked = opt.lorebookDescs;
-    $('useExtra').checked = opt.extra;
-    $('extraContext').value = opt.extra ? opt.extraText : '';
-    $('extraContext').classList.toggle('hidden', !opt.extra);
-    // "advanced" lorebooks can't be separated heuristically, so collect the keys
-    // through the LLM right away (it isolates the lore from the full prompt).
-    if (state.hasAdvanced) await runBuild();
+    await selectCapture(id);
   } catch (e) {
     setStatus($('loreExtractStatus'), 'x', e.message);
   } finally {
@@ -1015,6 +1057,7 @@ async function openSettings() {
   $('setBaseUrl').value = s.baseUrl || '';
   $('setApiKey').value = s.apiKey || '';
   $('setModel').value = s.model || '';
+  $('setDefaultLoreTrigger').value = s.defaultLoreTriggerText || '';
   $('setDontHideWindow').checked = !!s.dontHideBrowserWindow;
   $('settingsDialog').showModal();
 }
@@ -1062,6 +1105,7 @@ async function saveSettings(e) {
       apiKey: $('setApiKey').value.trim(),
       model: $('setModel').value.trim(),
       dontHideBrowserWindow: $('setDontHideWindow').checked,
+      defaultLoreTriggerText: $('setDefaultLoreTrigger').value.trim(),
     }),
   });
   $('settingsDialog').close();
@@ -1145,10 +1189,11 @@ $('loreExtractBtn').addEventListener('click', runLoreExtract);
 $('useExtra').addEventListener('change', () => {
   $('extraContext').classList.toggle('hidden', !$('useExtra').checked);
 });
-$('exExtra').addEventListener('change', () => {
-  $('exExtraText').classList.toggle('hidden', !$('exExtra').checked);
+$('triggerCustom').addEventListener('change', () => {
+  $('loreTriggerText').classList.toggle('hidden', !$('triggerCustom').checked);
 });
-wireContextExpand('exSources');
+$('previewTriggerBtn').addEventListener('click', previewTriggerText);
+wireContextExpand('triggerSources');
 wireContextExpand('useSources');
 $('rawJsonToggle').addEventListener('change', () => {
   const raw = $('rawJsonToggle').checked;

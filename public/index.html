@@ -185,50 +185,65 @@
           <!-- On-demand closed-lorebook extraction (runs generateAlpha) -->
           <div id="loreExtractBlock" class="block extract-bar hidden">
             <h3 data-i18n="loreExtractTitle">extract closed lorebook</h3>
-            <p class="hint" data-i18n="loreExtractHint">choose what context is sent to the model to retrieve the lorebook entries.</p>
-            <div class="context-sources" id="exSources">
+            <p class="hint" data-i18n="loreExtractHint">choose text to send in the extraction chat and trigger lorebook entries.</p>
+            <h4 data-i18n="triggerSourcesTitle">trigger text sent to JanitorAI</h4>
+            <div class="context-sources" id="triggerSources">
               <div class="ctx-block" data-ctx="card">
                 <div class="ctx-head">
-                  <label><input type="checkbox" id="exCard" checked /> <span data-i18n="ctxCard">character card</span></label>
+                  <label><input type="checkbox" id="triggerCard" checked /> <span data-i18n="ctxCard">character card</span></label>
                   <span class="ctx-meta"><span class="ctx-len"></span><span class="ctx-caret">▸</span></span>
                 </div>
                 <pre class="ctx-content scroll small hidden"></pre>
               </div>
               <div class="ctx-block" data-ctx="catalog">
                 <div class="ctx-head">
-                  <label><input type="checkbox" id="exCatalog" checked /> <span data-i18n="ctxCatalog">card description on site</span></label>
+                  <label><input type="checkbox" id="triggerSiteDescription" checked /> <span data-i18n="ctxCatalog">card description on site</span></label>
                   <span class="ctx-meta"><span class="ctx-len"></span><span class="ctx-caret">▸</span></span>
                 </div>
                 <pre class="ctx-content scroll small hidden"></pre>
               </div>
               <div class="ctx-block" data-ctx="scenario">
                 <div class="ctx-head">
-                  <label><input type="checkbox" id="exScenario" checked /> <span data-i18n="ctxScenario">scenario</span></label>
+                  <label><input type="checkbox" id="triggerScenario" checked /> <span data-i18n="ctxScenario">scenario</span></label>
                   <span class="ctx-meta"><span class="ctx-len"></span><span class="ctx-caret">▸</span></span>
                 </div>
                 <pre class="ctx-content scroll small hidden"></pre>
               </div>
               <div class="ctx-block" data-ctx="greetings">
                 <div class="ctx-head">
-                  <label><input type="checkbox" id="exGreetings" /> <span data-i18n="ctxGreetings">first message(s)</span></label>
+                  <label><input type="checkbox" id="triggerGreetings" checked /> <span data-i18n="ctxGreetings">first message(s)</span></label>
                   <span class="ctx-meta"><span class="ctx-len"></span><span class="ctx-caret">▸</span></span>
                 </div>
                 <pre class="ctx-content scroll small hidden"></pre>
               </div>
-              <div class="ctx-block" data-ctx="lorebookDescs">
+              <div class="ctx-block" data-ctx="lorebookNames">
                 <div class="ctx-head">
-                  <label><input type="checkbox" id="exLorebookDescs" /> <span data-i18n="ctxLorebookDescs">lorebook descriptions</span></label>
+                  <label><input type="checkbox" id="triggerLorebookNames" checked /> <span data-i18n="triggerLorebookNames">lorebook names</span></label>
                   <span class="ctx-meta"><span class="ctx-len"></span><span class="ctx-caret">▸</span></span>
                 </div>
                 <pre class="ctx-content scroll small hidden"></pre>
               </div>
-              <div class="ctx-block" data-ctx="extra">
+              <div class="ctx-block" data-ctx="savedDefault">
                 <div class="ctx-head">
-                  <label><input type="checkbox" id="exExtra" /> <span data-i18n="ctxExtra">custom text</span></label>
+                  <label><input type="checkbox" id="triggerSavedDefault" checked /> <span data-i18n="triggerSavedDefault">saved default text</span></label>
+                  <span class="ctx-meta"><span class="ctx-len"></span><span class="ctx-caret">▸</span></span>
                 </div>
-                <textarea id="exExtraText" rows="3" class="hidden" data-i18n-ph="phExtra" placeholder="optional custom context…"></textarea>
+                <pre class="ctx-content scroll small hidden"></pre>
+              </div>
+              <div class="ctx-block" data-ctx="custom">
+                <div class="ctx-head">
+                  <label><input type="checkbox" id="triggerCustom" /> <span data-i18n="ctxExtra">custom text</span></label>
+                </div>
+                <textarea id="loreTriggerText" rows="3" class="hidden" data-i18n-ph="phLoreTrigger" placeholder="names, locations, lorebook titles, or other likely trigger keywords…"></textarea>
               </div>
             </div>
+            <div class="row">
+              <button id="previewTriggerBtn" class="ghost small" data-i18n="previewTriggerBtn">preview trigger text</button>
+            </div>
+            <details id="triggerPreview" class="block hidden">
+              <summary data-i18n="triggerPreviewTitle">text sent to JanitorAI</summary>
+              <pre id="triggerPreviewPre" class="scroll"></pre>
+            </details>
             <div class="row">
               <button id="loreExtractBtn" class="primary"><svg class="icon"><use href="#i-extract"/></svg><span data-i18n="btnExtractLore">extract</span></button>
               <span id="loreExtractStatus" class="muted"></span>
@@ -236,6 +251,7 @@
           </div>
 
           <div id="buildBlock" class="block hidden">
+            <p id="buildPendingHint" class="hint" data-i18n="buildPendingHint">configure the LLM context now; capture the lorebook before building.</p>
             <div id="lorebookEntries" class="lorebook-entries"></div>
             <textarea id="lorebookText" class="hidden"></textarea>
             <div class="row" id="dlExtractedRow">
@@ -360,6 +376,9 @@
       <input id="setApiKey" type="password" placeholder="sk-…" />
       <label>Model</label>
       <input id="setModel" type="text" placeholder="anthropic/claude-opus-4-8" />
+      <label data-i18n="lblDefaultLoreTrigger">default lorebook trigger text</label>
+      <textarea id="setDefaultLoreTrigger" rows="4" data-i18n-ph="phDefaultLoreTrigger" placeholder="keywords appended to every lorebook extraction…"></textarea>
+      <p class="hint" data-i18n="defaultLoreTriggerHint">saved locally and appended to every extraction prompt.</p>
       <label class="raw-toggle">
         <input type="checkbox" id="setDontHideWindow" />
         <span data-i18n="dontHideWindowToggle">don't hide browser window while extracting</span>

@@ -34,6 +34,7 @@ function loadSettings() {
     apiKey: '',
     model: '',
     dontHideBrowserWindow: false,
+    defaultLoreTriggerText: '',
     saucepanToken: '',
   };
   try {
@@ -131,13 +132,13 @@ function composerOpts() {
 /**
  * Send "." to read the card (probe, not saved), then send a keyword-dense message
  * so the closed lorebook fires on as many keys as possible. We stuff the card
- * (and any [extraTriggerText], e.g. the bot's first message) into a single latest
+ * (and selected trigger sources) into a single latest
  * user turn so every keyword is within scan depth regardless of JanitorAI's
  * server-side scan rules (which scan recent messages by depth, not by author).
  * Returns the card (for extraction context) and the second ("full") saved capture.
  * Caller resets suppressNextCapture in finally.
  */
-async function runAutoTrigger(page, extraTriggerText = '') {
+async function runAutoTrigger(page, extraTriggerText = '', includeCard = true) {
   const opts = composerOpts();
   const settleMs = 1500;
 
@@ -149,9 +150,8 @@ async function runAutoTrigger(page, extraTriggerText = '') {
   const card = extractCard(dotCap.payload);
   if (!card) throw new Error('could not find the character card in the capture');
 
-  const triggerText = extraTriggerText
-    ? `${card}\n\n${extraTriggerText}`
-    : card;
+  const triggerText = includeCard ? [card, extraTriggerText].filter(Boolean).join('\n\n') : extraTriggerText;
+  if (!triggerText) throw new Error('select at least one trigger source');
 
   await page.waitForTimeout(settleMs);
   const fullWait = waitNextCapture(120000);
@@ -159,6 +159,38 @@ async function runAutoTrigger(page, extraTriggerText = '') {
   const fullCap = await fullWait;
 
   return { card, fullCap };
+}
+
+function lorebookNames(rec) {
+  const names = new Set();
+  for (const book of rec.publicLorebooks || []) {
+    const title = String((book && book.title) || '').trim();
+    if (title) names.add(title);
+  }
+  for (const script of ((rec.meta && rec.meta.scripts) || [])) {
+    const title = String((script && script.title) || '').trim();
+    if (title) names.add(title);
+  }
+  return [...names].join('\n');
+}
+
+function buildTriggerText(rec, trigger) {
+  const opts = trigger && typeof trigger === 'object' ? trigger : {};
+  const ctx = rec.context || {};
+  const add = (key, text, fallback = false) => {
+    if ((opts[key] ?? fallback) && text) return String(text).trim();
+    return '';
+  };
+  const savedDefault = loadSettings().defaultLoreTriggerText || '';
+  const parts = [
+    add('siteDescription', ctx.description),
+    add('scenario', ctx.scenario),
+    add('greetings', ctx.greetings, true),
+    add('lorebookNames', lorebookNames(rec)),
+    add('savedDefault', savedDefault, true),
+    add('custom', opts.customText),
+  ].filter(Boolean);
+  return { includeCard: opts.card !== false, text: parts.join('\n\n') };
 }
 
 const app = express();
@@ -551,8 +583,9 @@ app.post('/api/capture', async (req, res) => {
     const publicContents = publicEntryContents(rec.publicLorebooks);
     const avatarBase64 = (rec.character && rec.character.avatarBase64) || '';
 
-    // Already captured → reuse the stored payload, no second browser run.
-    if (rec.payload) {
+    // Already captured → reuse the stored payload unless the user explicitly
+    // requests a fresh trigger run with different source selections or keywords.
+    if (rec.payload && !req.body.force) {
       const built = assembleResult(rec, '', rec.context, meta, avatarBase64, publicContents);
       return res.json({
         id: rec.id, lorebookText: built.lorebookText, character: built.character, reused: true,
@@ -618,10 +651,10 @@ app.post('/api/capture', async (req, res) => {
         // auto-trigger fires generateAlpha.
         await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => { });
 
-        const firstMessage = meta && meta.first_message ? String(meta.first_message) : '';
+        const trigger = buildTriggerText(rec, req.body.trigger);
         // Attach the upcoming generateAlpha capture to THIS inspected record.
         pendingCaptureId = rec.id;
-        const { card, fullCap } = await runAutoTrigger(page, firstMessage);
+        const { card, fullCap } = await runAutoTrigger(page, trigger.text, trigger.includeCard);
 
         const result = assembleResult(fullCap, card, rec.context, meta, avatarBase64, publicContents);
         store.attachCardData(fullCap.id, result.character);
@@ -819,6 +852,7 @@ app.post('/api/settings', (req, res) => {
     apiKey: req.body.apiKey ?? cur.apiKey,
     model: req.body.model ?? cur.model,
     dontHideBrowserWindow: req.body.dontHideBrowserWindow ?? cur.dontHideBrowserWindow,
+    defaultLoreTriggerText: req.body.defaultLoreTriggerText ?? cur.defaultLoreTriggerText,
   };
   saveSettings(next);
   const { saucepanToken, ...safe } = next;
