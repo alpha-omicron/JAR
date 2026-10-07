@@ -2,6 +2,12 @@
 
 JAR (Janitor AI Ripper) — extract lorebooks and characters from JanitorAI, both public and private, locally on your PC and automated.
 
+> [!IMPORTANT] **Maintained fork:**
+>
+> The [original JAR project](https://github.com/hydall/JAR) was deprecated in favor of [Glaze](https://github.com/hydall/Glaze). This repository is an independent, maintained continuation of JAR for users who want the standalone extraction tool.
+>
+> Additions in this continuation include JanitorAI conversation import/linking with raw JSON and SillyTavern JSONL conversation exports (including alternate replies as swipes); an improved closed-lorebook trigger workflow; and updated session-status handling.
+
 ## Requirements
 
 - **A Windows / Linux / Mac machine with a GUI.** JAR launches a full browser window, so it won't run without a GUI.
@@ -12,11 +18,11 @@ JAR (Janitor AI Ripper) — extract lorebooks and characters from JanitorAI, bot
 
 ### Step 1. Get the code
 
-Option A — without Git: open https://github.com/hydall/JAR, click the green **Code → Download ZIP** button, unzip it, and enter the resulting folder.
+Option A — without Git: open https://github.com/alpha-omicron/JAR, click the green **Code → Download ZIP** button, unzip it, and enter the resulting folder.
 
 Option B — with Git: 
 ```bash
-git clone https://github.com/hydall/JAR.git
+git clone https://github.com/alpha-omicron/JAR.git
 cd JAR
 ```
 
