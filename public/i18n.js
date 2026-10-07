@@ -61,6 +61,7 @@ const I18N = {
   publicHint: 'character has public lorebooks. They have been downloaded whole from JanitorAI — no extraction needed.',
   publicUntitled: '(untitled lorebook)', privateTitle: 'private lorebooks',
   privateHint: 'This character has {n} closed lorebooks which need to be extracted.', private: 'private',
+  scriptTypeLorebook: 'structured lorebook', scriptTypeAdvanced: 'advanced / JS script',
   noLorebook: 'this character has no lorebook',
   advancedNotice: 'This character uses JS (advanced) lorebooks. The lorebook content must be collected with an LLM.',
   advancedBreakdownNotice: 'Heuristic separation is disabled for advanced/JS lorebooks. The full triggered system prompt is sent to the build LLM, which isolates the lorebook entries.',

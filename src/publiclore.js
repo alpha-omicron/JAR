@@ -37,6 +37,7 @@ function lorebookScriptRefs(meta) {
     .map((s) => ({
       id: String(s.id),
       title: s.title || '',
+      type: s.type,
       isPublic: s.is_public !== false,
     }));
 }
@@ -127,7 +128,9 @@ function parseScriptEntries(rec) {
  * @param {{title?:string}} [ref]
  */
 async function fetchPublicLorebook(page, scriptId, ref = {}) {
-  const base = { id: String(scriptId), title: ref.title || '', accessible: false };
+  const base = {
+    id: String(scriptId), title: ref.title || '', type: ref.type || 'lorebook', accessible: false,
+  };
   let res;
   try {
     res = await authedFetch(page, `${ORIGIN}/hampter/script/${scriptId}`);
@@ -156,6 +159,7 @@ async function fetchPublicLorebook(page, scriptId, ref = {}) {
   const common = {
     id: String(rec.id || scriptId),
     title: rec.title || ref.title || '',
+    type: ref.type || 'lorebook',
     description: pageDesc || rec.description || '',
     isPublic: rec.is_public === true,
     isCodePublic: rec.is_code_public === true,

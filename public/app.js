@@ -461,6 +461,13 @@ async function renderProvenance(rec, sep) {
 function renderPublicBooks(books) {
   state.publicBooks = Array.isArray(books) ? books : [];
 
+  const typeBadge = (b) => {
+    const advanced = b && (b.isJs || b.type === 'advanced');
+    const key = advanced ? 'scriptTypeAdvanced' : 'scriptTypeLorebook';
+    const cls = advanced ? 'script-type-advanced' : 'script-type-lorebook';
+    return `<span class="tag script-type ${cls}">${escapeHtml(t(key))}</span>`;
+  };
+
   // A public lorebook page may carry a description — show it under the title.
   const descHtml = (b) => {
     const d = stripHtml(b && b.description);
@@ -487,11 +494,15 @@ function renderPublicBooks(books) {
       const title = escapeHtml(b.title || t('publicUntitled'));
       row.innerHTML = `<div class="pb-meta"><span class="pb-title">${iconSvg('book')} ${title}</span>`
         + `<span class="muted">${b.entryCount} ${t('provEntries')}</span>${descHtml(b)}</div>`;
+      const actions = document.createElement('div');
+      actions.className = 'book-actions';
+      actions.innerHTML = typeBadge(b);
       const btn = document.createElement('button');
       btn.className = 'ghost small';
       btn.innerHTML = `${iconSvg('download')} .json`;
       btn.addEventListener('click', () => downloadPublicBook(i));
-      row.appendChild(btn);
+      actions.appendChild(btn);
+      row.appendChild(actions);
       pubContainer.appendChild(row);
     });
     jsBooks.forEach((b) => {
@@ -500,12 +511,16 @@ function renderPublicBooks(books) {
       row.className = 'public-book';
       const title = escapeHtml(b.title || t('publicUntitled'));
       row.innerHTML = `<div class="pb-meta"><span class="pb-title">${iconSvg('book')} ${title}</span>`
-        + `<span class="muted">JS</span>${descHtml(b)}</div>`;
+        + `${descHtml(b)}</div>`;
+      const actions = document.createElement('div');
+      actions.className = 'book-actions';
+      actions.innerHTML = typeBadge(b);
       const btn = document.createElement('button');
       btn.className = 'ghost small';
       btn.innerHTML = `${iconSvg('download')} Build .json`;
       btn.addEventListener('click', () => buildJsBook(i, btn));
-      row.appendChild(btn);
+      actions.appendChild(btn);
+      row.appendChild(actions);
       pubContainer.appendChild(row);
     });
   }
@@ -526,6 +541,10 @@ function renderPublicBooks(books) {
       const title = escapeHtml(b.title || t('publicUntitled'));
       row.innerHTML = `<div class="pb-meta"><span class="pb-title">${iconSvg('lock')} ${title}</span>`
         + `<span class="muted">${t('private')}</span>${descHtml(b)}</div>`;
+      const actions = document.createElement('div');
+      actions.className = 'book-actions';
+      actions.innerHTML = typeBadge(b);
+      row.appendChild(actions);
       privContainer.appendChild(row);
     });
   }

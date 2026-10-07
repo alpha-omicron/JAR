@@ -248,6 +248,10 @@ dialog h2 { margin-top: 0; font-size: 15px; }
 }
 .public-book .pb-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .public-book .pb-title { font-size: 13px; font-weight: 600; word-break: break-word; }
+.public-book .book-actions { display: flex; flex: none; align-items: center; gap: 8px; }
+.public-book .script-type { white-space: nowrap; font-weight: 400; }
+.public-book .script-type-advanced { color: #f2c77c; background: rgba(210, 148, 46, 0.18); }
+.public-book .script-type-lorebook { color: #cfe0ff; background: var(--tag); }
 
 /* raw messages: toggle to full unmodified JSON */
 .raw-toggle {
