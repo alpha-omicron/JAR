@@ -7,7 +7,11 @@ JAR (Janitor AI Ripper) — extract lorebooks and characters from JanitorAI, bot
 >
 > The [original JAR project](https://github.com/hydall/JAR) was deprecated in favor of [Glaze](https://github.com/hydall/Glaze). This repository is an independent, maintained continuation of JAR for users who want the standalone extraction tool.
 >
-> Additions in this continuation include JanitorAI conversation import/linking with raw JSON and SillyTavern JSONL conversation exports (including alternate replies as swipes); an improved closed-lorebook trigger workflow; and updated session-status handling.
+> Key additions in this continuation:
+>
+> - JanitorAI conversation import/linking plus raw JSON and SillyTavern JSONL exports, including alternate replies as swipes.
+> - More reliable recovery of hidden character cards, greetings, and closed lorebooks, with portable `{{char}}` / `{{user}}` macros.
+> - Public lorebook exports and reconstruction support for advanced-script lorebooks.
 
 ## Requirements
 
