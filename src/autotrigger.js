@@ -189,6 +189,30 @@ async function fetchChat(page, chatId) {
   }
 }
 
+/** Normalize JanitorAI's chat-message envelope across API versions. */
+function chatMessages(chat) {
+  if (!chat || typeof chat !== 'object') return [];
+  for (const key of ['chatMessages', 'chat_messages', 'messages']) {
+    if (Array.isArray(chat[key])) return chat[key];
+  }
+  return [];
+}
+
+/**
+ * Return the opening-message IDs only when this is an untouched new chat.
+ *
+ * JanitorAI creates a bot greeting in the POST /chats response. It is prior
+ * conversation history, not a generated prompt; leaving it there lets its
+ * keywords trigger lore during JAR's supposedly neutral `.` probe. Never
+ * delete a chat which contains a user message: it is no longer a fresh,
+ * JAR-owned extraction chat.
+ */
+function freshGreetingMessageIds(chat) {
+  const messages = chatMessages(chat);
+  if (!messages.length || messages.some((message) => !message || message.is_bot !== true)) return [];
+  return messages.map((message) => message.id).filter((id) => id != null);
+}
+
 /**
  * List the signed-in account's chats for one character. JanitorAI has used a
  * few response envelopes over time, so normalize the documented chat-list
@@ -475,5 +499,6 @@ async function checkLogin(page) {
 
 module.exports = {
   sendMessage, pickChatPage, parseCharacterId, createChat, deleteChat, fetchCharacter,
-  fetchChat, fetchCharacterChats, chatListItems, fetchMyProfile, authedFetch, checkLogin, dismissModals,
+  fetchChat, chatMessages, freshGreetingMessageIds,
+  fetchCharacterChats, chatListItems, fetchMyProfile, authedFetch, checkLogin, dismissModals,
 };

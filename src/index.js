@@ -19,7 +19,7 @@ const {
   BrowserManager, openLogin, logout, requireLogin, getStatus, getAvatarUrl, downloadAvatar,
 } = require('./capture');
 const {
-  sendMessage, parseCharacterId, createChat, deleteChat, fetchCharacter, fetchChat, fetchCharacterChats, fetchMyProfile, authedFetch,
+  sendMessage, parseCharacterId, createChat, deleteChat, freshGreetingMessageIds, fetchCharacter, fetchChat, fetchCharacterChats, fetchMyProfile, authedFetch,
 } = require('./autotrigger');
 const { fetchPublicLorebooks, publicEntryContents } = require('./publiclore');
 const { enterExtractionMode, restoreProfile } = require('./profile');
@@ -779,26 +779,29 @@ app.post('/api/capture', async (req, res) => {
           console.warn('[persona] could not ensure {{user}} persona:', e.message);
         }
 
-        // Reuse an existing chat when available, otherwise create a new one.
-        // If the saved chat is no longer accessible (deleted externally), fall
-        // back to creating a fresh chat.
-        if (rec.chatId) {
-          chatId = rec.chatId;
-          try {
-            const probe = await authedFetch(page, `https://janitorai.com/hampter/chats/${chatId}`);
-            if (probe.status >= 400) {
-              console.log(`[chat] saved chat ${chatId} is gone, creating new one`);
-              chatId = null;
-            }
-          } catch (_) {
-            chatId = null;
+        // A new JAI chat always starts with the character greeting. Keep it for
+        // the JAI UI (which requires an initial assistant message), but omit it
+        // from the outgoing neutral-probe request below so its words cannot fire
+        // lore. A fresh chat also prevents an old failed trigger run leaking its
+        // user turns into a retry.
+        const previousChatId = rec.chatId;
+        chatId = await createChat(page, characterId);
+        let greetingIds;
+        try {
+          const freshChat = await fetchChat(page, chatId);
+          greetingIds = freshGreetingMessageIds(freshChat);
+          if (!greetingIds.length) {
+            throw new Error('new extraction chat has no identifiable opening greeting');
           }
+        } catch (e) {
+          await deleteChat(page, chatId).catch(() => {});
+          throw e;
         }
-        if (!chatId) {
-          chatId = await createChat(page, characterId);
-          store.attachChatId(rec.id, chatId);
-        } else {
-          console.log(`[chat] reusing existing chat ${chatId}`);
+        store.attachChatId(rec.id, chatId);
+        if (previousChatId && previousChatId !== chatId) {
+          await deleteChat(page, previousChatId).catch((e) => {
+            console.warn(`[chat] stale extraction chat ${previousChatId} could not be deleted:`, e.message);
+          });
         }
         await page.goto(`https://janitorai.com/chats/${chatId}`, { waitUntil: 'domcontentloaded' });
 
@@ -813,6 +816,7 @@ app.post('/api/capture', async (req, res) => {
         const trigger = buildTriggerText(rec, req.body.trigger);
         // Attach the upcoming generateAlpha capture to THIS inspected record.
         pendingCaptureId = rec.id;
+        browser.setNextMessageExclusions(greetingIds);
         const { card, probeCap, fullCap } = await runAutoTrigger(
           page, trigger.text, trigger.includeCard,
         );
@@ -842,6 +846,7 @@ app.post('/api/capture', async (req, res) => {
       } finally {
         pendingCaptureId = null;
         browser.setPersonaOverride(null);
+        browser.setNextMessageExclusions([]);
         if (personaId) {
           await deletePersona(page, personaId)
             .catch((e) => console.warn('[persona] delete failed:', e.message));

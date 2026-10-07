@@ -165,10 +165,15 @@ function looksLikePayload(obj) {
  * @param {() => (object|null)} [opts.getPersonaOverride] returns the persona to
  *        force into the outgoing `/generateAlpha` REQUEST (or null for none) —
  *        see {@link installPersonaOverride}.
+ * @param {() => string[]} [opts.getNextMessageExclusions] returns IDs to omit
+ *        from exactly the next matching generateAlpha request.
+ * @param {(ids:string[])=>void} [opts.consumeMessageExclusions] clears IDs once
+ *        the request was successfully rewritten.
  * @returns {Promise<import('playwright').BrowserContext>}
  */
 async function startCapture({
   userDataDir, mode = 'background', onCapture, onCaptureError, getPersonaOverride,
+  getNextMessageExclusions, consumeMessageExclusions,
 }) {
   const dir = path.resolve(userDataDir || './user-data');
   // Closing then immediately relaunching (e.g. switching visible→background
@@ -225,16 +230,24 @@ async function startCapture({
   // Rewrite the outgoing `/generateAlpha` REQUEST to force our `{{user}}` persona
   // (when one is set for the run). JanitorAI has no separate "set chat persona"
   // endpoint — the persona id simply rides along in this request body — so we edit
-  // it in flight. Every matching request MUST be continued, override or not.
+  // it in flight. We also support a one-shot history exclusion for the neutral
+  // probe: JanitorAI's UI needs its opening greeting rendered, but its words must
+  // not be sent to prompt assembly where they could activate lorebook entries.
+  // Every matching request MUST be continued, modified or not.
   await context.route('**/generateAlpha', async (route) => {
-    const persona = getPersonaOverride ? getPersonaOverride() : null;
     const req = route.request();
-    if (!persona || req.method() !== 'POST') return route.continue();
+    if (req.method() !== 'POST') return route.continue();
+    const persona = getPersonaOverride ? getPersonaOverride() : null;
+    const exclusions = getNextMessageExclusions ? getNextMessageExclusions() : [];
+    if (!persona && !exclusions.length) return route.continue();
     try {
       const raw = req.postData();
       if (!raw) return route.continue();
       const body = JSON.parse(raw);
-      if (!applyPersonaOverride(body, persona)) return route.continue();
+      const personaChanged = applyPersonaOverride(body, persona);
+      const excluded = excludeChatMessages(body, exclusions);
+      if (excluded.length) consumeMessageExclusions?.(excluded);
+      if (!personaChanged && !excluded.length) return route.continue();
       return route.continue({ postData: JSON.stringify(body) });
     } catch (_) {
       return route.continue();
@@ -286,6 +299,19 @@ async function startCapture({
   return context;
 }
 
+/** Remove requested message IDs from an assembled generation request. */
+function excludeChatMessages(body, ids) {
+  if (!body || !Array.isArray(body.chatMessages) || !Array.isArray(ids) || !ids.length) return [];
+  const wanted = new Set(ids.map((id) => String(id)));
+  const removed = [];
+  body.chatMessages = body.chatMessages.filter((message) => {
+    if (!message || !wanted.has(String(message.id))) return true;
+    removed.push(String(message.id));
+    return false;
+  });
+  return removed;
+}
+
 /**
  * Owns the capture browser's lifecycle, mirroring GlazeFlutter's
  * `JanitorWebViewProxy`: the browser is **never kept warm**. It is opened only
@@ -306,12 +332,18 @@ class BrowserManager {
     // run (set by the caller before triggering, cleared after). Read live by the
     // request-rewrite route, so it can be set after the context is already open.
     this.personaOverride = null;
+    this.nextMessageExclusions = [];
   }
 
   isReady() { return this.context != null; }
 
   /** Force (or clear, with null) the persona injected into /generateAlpha. */
   setPersonaOverride(persona) { this.personaOverride = persona || null; }
+
+  /** Omit these chat-history messages from only the next generateAlpha request. */
+  setNextMessageExclusions(ids) {
+    this.nextMessageExclusions = [...new Set((ids || []).map((id) => String(id)).filter(Boolean))];
+  }
 
   /**
    * Ensure a context is up in the requested [mode] ('visible' | 'background').
@@ -326,8 +358,14 @@ class BrowserManager {
       userDataDir: this.opts.userDataDir,
       mode,
       onCapture: this.opts.onCapture,
-      onCaptureError: this.opts.onCaptureError,
-      getPersonaOverride: () => this.personaOverride,
+        onCaptureError: this.opts.onCaptureError,
+        getPersonaOverride: () => this.personaOverride,
+        getNextMessageExclusions: () => this.nextMessageExclusions,
+        consumeMessageExclusions: (removed) => {
+          const taken = new Set(removed.map((id) => String(id)));
+          this.nextMessageExclusions = this.nextMessageExclusions
+            .filter((id) => !taken.has(String(id)));
+        },
     })
       .then((ctx) => {
         ctx.on('close', () => {
@@ -366,12 +404,14 @@ class BrowserManager {
     this.context = null;
     this.modeActive = null;
     this.starting = null;
+    this.nextMessageExclusions = [];
     try { await ctx?.close(); } catch (_) { /* */ }
   }
 }
 
 module.exports = {
   startCapture,
+  excludeChatMessages,
   BrowserManager,
   pickPage,
   getStatus,
