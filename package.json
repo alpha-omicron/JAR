@@ -17,6 +17,7 @@
     "test:probe-exclusion": "node test/probeExclusion.test.js",
     "test:greeting-recovery": "node test/greetingRecovery.test.js",
     "test:public-script-cache": "node test/publicScriptCache.test.js",
+    "test:macros": "node test/macros.test.js",
     "postinstall": "playwright install chromium"
   },
   "dependencies": {

@@ -150,8 +150,8 @@ async function authedFetch(page, url, init = {}) {
 
 /**
  * Create a new chat for a character via JanitorAI's API. The chat inherits the
- * account's DEFAULT persona automatically (the create payload is just the
- * character id), so persona selection is done separately — see ./personas.
+ * account's selected persona automatically (the create payload is just the
+ * character id).
  * @returns {Promise<string>} the new chat id
  */
 async function createChat(page, characterId) {

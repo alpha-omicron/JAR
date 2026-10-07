@@ -144,6 +144,7 @@ function attachPayload(id, payload, source) {
   // A new triggered prompt can contain different closed-lorebook content, so a
   // prior private reconstruction is no longer an export of the current source.
   delete rec.privateLorebookReconstruction;
+  delete rec.macroUserName;
   if (source) rec.source = source;
   rec.capturedAt = Date.now();
   fs.writeFileSync(fileFor(id), JSON.stringify(rec, null, 2), 'utf8');
@@ -159,6 +160,15 @@ function attachProbePayload(id, probePayload) {
   const rec = get(id);
   if (!rec) return false;
   rec.probePayload = probePayload || null;
+  fs.writeFileSync(fileFor(id), JSON.stringify(rec, null, 2), 'utf8');
+  return true;
+}
+
+/** Remember the account name only when {{user}} could not be preserved in capture. */
+function attachMacroUserName(id, userName) {
+  const rec = get(id);
+  if (!rec) return false;
+  rec.macroUserName = String(userName || '').trim();
   fs.writeFileSync(fileFor(id), JSON.stringify(rec, null, 2), 'utf8');
   return true;
 }
@@ -353,7 +363,7 @@ function clearChatId(id) {
 module.exports = {
   save, saveInspection, attachPayload, list, get, remove,
   attachProbePayload, refreshInspection, attachCatalog, attachCharacter, attachCardData,
-  attachPublicLorebooks, attachPublicScriptReconstruction, attachPrivateLorebookReconstruction,
+  attachPublicLorebooks, attachPublicScriptReconstruction, attachPrivateLorebookReconstruction, attachMacroUserName,
   mergePublicLorebooks, attachChatId, clearChatId,
   findByCharacterId, attachConversation, updateConversation, removeConversation,
   systemContent, DIR,

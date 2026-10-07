@@ -117,24 +117,12 @@ async function downloadAvatar(page, url) {
   return '';
 }
 
-/**
- * Rewrite a `/generateAlpha` REQUEST body so it carries `persona` as the active
- * user persona. JanitorAI substitutes the `{{user}}` macro with the persona's
- * name server-side while assembling the prompt; forcing a persona literally named
- * `{{user}}` makes that substitution a no-op, so the macro survives in the
- * captured RESPONSE. Mirrors the shape the real client sends (see the
- * generateAlpha request: `personas[]`, `profiles[]`, `chat.persona_id`).
- * @returns {boolean} whether anything was changed
- */
+/** Force an isolated, temporary capture persona into the generation request. */
 function applyPersonaOverride(body, persona) {
   if (!body || !persona || !persona.id) return false;
   const appearance = persona.appearance || '';
-  body.personas = [{
-    appearance, id: persona.id, name: persona.name, user_id: persona.user_id,
-  }];
-  body.profiles = [{
-    appearance, id: persona.id, name: persona.name, type: 'persona',
-  }];
+  body.personas = [{ appearance, id: persona.id, name: persona.name, user_id: persona.user_id }];
+  body.profiles = [{ appearance, id: persona.id, name: persona.name, type: 'persona' }];
   if (body.chat && typeof body.chat === 'object') body.chat.persona_id = persona.id;
   return true;
 }
@@ -143,6 +131,21 @@ function applyPersonaOverride(body, persona) {
 function looksLikePayload(obj) {
   return obj && Array.isArray(obj.messages)
     && obj.messages.some((m) => m && m.role === 'system' && typeof m.content === 'string');
+}
+
+/** Read the active persona name from the same request that produced a capture. */
+function requestPersonaName(request) {
+  try {
+    const body = JSON.parse(request.postData() || '');
+    const profiles = Array.isArray(body.profiles) ? body.profiles : [];
+    const personas = Array.isArray(body.personas) ? body.personas : [];
+    const direct = [body.persona, body.userPersona, body.activePersona,
+      body.chat && body.chat.persona, body.chat && body.chat.user_persona]
+      .find((item) => item && item.name);
+    const active = direct || profiles.find((item) => item && item.type === 'persona' && item.name)
+      || personas.find((item) => item && item.name);
+    return String(active && active.name || '').trim();
+  } catch (_) { return ''; }
 }
 
 /**
@@ -162,9 +165,7 @@ function looksLikePayload(obj) {
  * @param {'visible'|'background'} opts.mode
  * @param {(rec:{url:string,payload:object,source:string})=>void} opts.onCapture
  * @param {(error:Error)=>void} [opts.onCaptureError] fatal capture failure callback
- * @param {() => (object|null)} [opts.getPersonaOverride] returns the persona to
- *        force into the outgoing `/generateAlpha` REQUEST (or null for none) —
- *        see {@link installPersonaOverride}.
+ * @param {() => (object|null)} [opts.getPersonaOverride] isolated persona for capture
  * @param {() => string[]} [opts.getNextMessageExclusions] returns IDs to omit
  *        from exactly the next matching generateAlpha request.
  * @param {(ids:string[])=>void} [opts.consumeMessageExclusions] clears IDs once
@@ -172,7 +173,7 @@ function looksLikePayload(obj) {
  * @returns {Promise<import('playwright').BrowserContext>}
  */
 async function startCapture({
-  userDataDir, mode = 'background', onCapture, onCaptureError, getPersonaOverride,
+   userDataDir, mode = 'background', onCapture, onCaptureError, getPersonaOverride,
   getNextMessageExclusions, consumeMessageExclusions,
 }) {
   const dir = path.resolve(userDataDir || './user-data');
@@ -219,20 +220,18 @@ async function startCapture({
     return false;
   };
 
-  const deliver = (url, payload, source) => {
+  const deliver = (url, payload, source, userName = '') => {
     try {
       const str = JSON.stringify(payload);
       if (seen(str)) return;
-      onCapture({ url, payload, source });
+      onCapture({ url, payload, source, userName });
     } catch (_) { /* ignore */ }
   };
 
-  // Rewrite the outgoing `/generateAlpha` REQUEST to force our `{{user}}` persona
-  // (when one is set for the run). JanitorAI has no separate "set chat persona"
-  // endpoint — the persona id simply rides along in this request body — so we edit
-  // it in flight. We also support a one-shot history exclusion for the neutral
-  // probe: JanitorAI's UI needs its opening greeting rendered, but its words must
-  // not be sent to prompt assembly where they could activate lorebook entries.
+  // Rewrite the outgoing `/generateAlpha` request for the isolated capture
+  // persona and a one-shot history exclusion on the neutral probe.
+  // JanitorAI's UI needs its opening greeting rendered, but its words must not be
+  // sent to prompt assembly where they could activate lorebook entries.
   // Every matching request MUST be continued, modified or not.
   await context.route('**/generateAlpha', async (route) => {
     const req = route.request();
@@ -288,7 +287,9 @@ async function startCapture({
         return;
       }
     }
-    if (looksLikePayload(body)) deliver(url, body, 'generateAlpha');
+    if (looksLikePayload(body)) {
+      deliver(url, body, 'generateAlpha', requestPersonaName(response.request()));
+    }
   });
 
   const page = context.pages()[0] || (await context.newPage());
@@ -328,16 +329,12 @@ class BrowserManager {
     this.modeActive = null; // window mode of the currently-open context
     this.starting = null;
     this.busy = false;
-    // Persona forced into the outgoing /generateAlpha request for the current
-    // run (set by the caller before triggering, cleared after). Read live by the
-    // request-rewrite route, so it can be set after the context is already open.
     this.personaOverride = null;
     this.nextMessageExclusions = [];
   }
 
   isReady() { return this.context != null; }
 
-  /** Force (or clear, with null) the persona injected into /generateAlpha. */
   setPersonaOverride(persona) { this.personaOverride = persona || null; }
 
   /** Omit these chat-history messages from only the next generateAlpha request. */
@@ -357,7 +354,7 @@ class BrowserManager {
     this.starting = startCapture({
       userDataDir: this.opts.userDataDir,
       mode,
-      onCapture: this.opts.onCapture,
+        onCapture: this.opts.onCapture,
         onCaptureError: this.opts.onCaptureError,
         getPersonaOverride: () => this.personaOverride,
         getNextMessageExclusions: () => this.nextMessageExclusions,

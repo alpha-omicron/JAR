@@ -22,8 +22,9 @@ const {
   sendMessage, parseCharacterId, createChat, deleteChat, freshGreetingMessageIds, fetchCharacter, fetchChat, fetchCharacterChats, fetchMyProfile, authedFetch,
 } = require('./autotrigger');
 const { fetchPublicLorebooks, publicEntryContents, contentHash, scriptSourceHash } = require('./publiclore');
+const { restoreMacros, restoreCharacterMacros } = require('./macros');
 const { enterExtractionMode, restoreProfile } = require('./profile');
-const { ensureUserMacroPersona, deletePersona } = require('./personas');
+const { createMacroCapturePersona, deletePersona } = require('./personas');
 const { allowsProxy, proxyForbiddenError } = require('./proxyPermission');
 const { countTokens } = require('./tokenizer');
 const saucepan = require('./saucepan');
@@ -114,13 +115,14 @@ const browser = new BrowserManager({
     if (suppressNextCapture) {
       suppressNextCapture = false;
       console.log(`[capture] ${rec.source} (neutral probe — awaiting trigger capture)`);
-      resolveWaiters({ id: null, payload: rec.payload, source: rec.source, ts: Date.now() });
+        resolveWaiters({ id: null, payload: rec.payload, source: rec.source, userName: rec.userName, ts: Date.now() });
       return;
     }
     if (pendingCaptureId) {
       const stored = store.attachPayload(pendingCaptureId, rec.payload, rec.source);
       pendingCaptureId = null;
       if (stored) {
+        stored.userName = rec.userName;
         console.log(`[capture] ${stored.source} ${stored.id} (attached to inspection)`);
         broadcast('capture', { id: stored.id });
         resolveWaiters(stored);
@@ -249,7 +251,7 @@ app.post('/api/separate', (req, res) => {
   const publicContents = publicEntryContents(rec.publicLorebooks);
   const base = separate(rec.payload, req.body.knownCard || '', publicContents);
   const built = assembleResult(
-    rec, rec.probePayload, '', rec.context, rec.meta, rec.avatarBase64, publicContents,
+    rec, rec.probePayload, '', rec.context, rec.meta, rec.avatarBase64, publicContents, null, rec.macroUserName,
   );
   res.json({
     ...base,
@@ -282,9 +284,16 @@ function resolveExtractInputs(req) {
     } else {
       const publicContents = publicEntryContents(rec.publicLorebooks);
       lorebookText = assembleResult(
-        rec, rec.probePayload, '', rec.context, rec.meta, rec.avatarBase64, publicContents,
+        rec, rec.probePayload, '', rec.context, rec.meta, rec.avatarBase64, publicContents, null, rec.macroUserName,
       ).lorebookText;
     }
+  }
+  // Advanced/JS captures are sent as their full assembled prompt so the LLM can
+  // isolate script effects itself. Restore names in that raw source first too.
+  if (fromRaw && rec) {
+    lorebookText = restoreMacros(lorebookText, macroOptions(
+      rec.payload, rec.meta, rec.macroUserName,
+    ));
   }
   // Stored structured context, with a fallback for older captures that only
   // have the legacy combined `catalog` string.
@@ -552,6 +561,9 @@ function isCardPublic(meta) {
  */
 function buildPublicCharacter(meta, avatarBase64) {
   const greetings = collectGreetings(meta, '');
+  // This is direct JanitorAI metadata, not prompt-assembled text: preserve it
+  // verbatim. In particular, a character name appearing as ordinary prose must
+  // not be mistaken for an expanded {{char}} macro.
   return {
     name: (meta && meta.name) || '',
     avatarBase64: avatarBase64 || '',
@@ -571,7 +583,7 @@ function buildPublicCharacter(meta, avatarBase64) {
 function buildChatCharacter(chat) {
   const meta = (chat && chat.character) || {};
   const greetings = collectGreetings(meta, '');
-  return {
+  return restoreCharacterMacros({
     name: meta.name || meta.chat_name || '',
     avatarBase64: '',
     description: String(meta.personality || meta.description || '').trim(),
@@ -583,7 +595,123 @@ function buildChatCharacter(chat) {
     creatorNotes: String(meta.description || '').trim(),
     tags: Array.isArray(meta.custom_tags) ? meta.custom_tags : [],
     definitionSource: 'chat',
+  }, macroOptions(null, meta));
+}
+
+function macroOptions(payload, meta, userName = '') {
+  return {
+    charNames: [
+      extractCharName(payload), meta && meta.name, meta && meta.chat_name,
+      meta && meta.character_name,
+    ],
+    userName,
   };
+}
+
+/** Get the display name that JanitorAI substitutes for {{user}} in prompts. */
+function profileDisplayName(profile) {
+  const names = ['persona_name', 'display_name', 'displayName', 'username', 'user_name', 'name'];
+  const seen = new Set();
+  const find = (value, depth = 0) => {
+    if (!value || typeof value !== 'object' || depth > 4 || seen.has(value)) return '';
+    seen.add(value);
+    for (const key of names) {
+      const name = String(value[key] || '').trim();
+      if (name) return name;
+    }
+    for (const child of Object.values(value)) {
+      const name = find(child, depth + 1);
+      if (name) return name;
+    }
+    return '';
+  };
+  return find(profile);
+}
+
+function escapeRegex(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Infer the expanded {{user}} value by matching a source field to its prompt copy. */
+function inferMacroUserName(meta, payload) {
+  const captured = fieldsFromPayload(payload);
+  const pairs = [
+    [meta && meta.personality, captured.persona],
+    [meta && meta.scenario, captured.scenario],
+    [meta && (meta.example_dialogs || meta.mes_example), captured.example],
+  ];
+  const charNames = [meta && meta.name, meta && meta.chat_name, meta && meta.character_name]
+    .map((name) => String(name || '').trim()).filter(Boolean).sort((a, b) => b.length - a.length);
+  for (const [template, value] of pairs) {
+    const source = htmlToText(template);
+    const text = String(value || '');
+    if (!source.includes('{{user}}') || !text) continue;
+    let userGroup = 0;
+    let expression = '^';
+    for (const part of source.split(/(\{\{char\}\}|\{\{user\}\})/)) {
+      if (part === '{{user}}') {
+        expression += '(.+?)';
+        if (!userGroup) userGroup = 1;
+      }
+      else if (part === '{{char}}') {
+        expression += charNames.length ? `(?:${charNames.map(escapeRegex).join('|')})` : '.+?';
+      } else expression += escapeRegex(part).replace(/\s+/g, '\\s+');
+    }
+    const match = text.match(new RegExp(expression));
+    if (match && String(match[userGroup] || '').trim().length >= 3) return match[userGroup].trim();
+  }
+  return '';
+}
+
+/**
+ * When source metadata is available, restore only the portion that JanitorAI
+ * expanded from that exact template. This avoids turning intentional prose such
+ * as "Morgan's journal" into {{char}}'s journal.
+ */
+function restoreFieldFromTemplate(value, template, options) {
+  const source = htmlToText(template);
+  const text = String(value || '');
+  if (!source.includes('{{char}}') && !source.includes('{{user}}')) {
+    return restoreMacros(text, options);
+  }
+  const names = (options.charNames || []).map((name) => String(name || '').trim())
+    .filter(Boolean).sort((a, b) => b.length - a.length);
+  let expression = '';
+  for (const part of source.split(/(\{\{char\}\}|\{\{user\}\})/)) {
+    if (part === '{{char}}') expression += names.length
+      ? `(?:${names.map(escapeRegex).join('|')})` : '.+?';
+    else if (part === '{{user}}') expression += '.+?';
+    else expression += escapeRegex(part).replace(/\s+/g, '\\s+');
+  }
+  const match = text.match(new RegExp(expression));
+  return match ? text.replace(match[0], source) : restoreMacros(text, options);
+}
+
+function restoreCharacterFromSource(character, meta, options) {
+  const greetings = collectGreetings(meta, '');
+  return {
+    ...character,
+    description: restoreFieldFromTemplate(character.description, meta && meta.personality, options),
+    scenario: restoreFieldFromTemplate(character.scenario, meta && meta.scenario, options),
+    firstMessage: restoreFieldFromTemplate(character.firstMessage, greetings[0], options),
+    alternateGreetings: (character.alternateGreetings || []).map((greeting, index) =>
+      restoreFieldFromTemplate(greeting, greetings[index + 1], options)),
+    exampleMessages: restoreFieldFromTemplate(
+      character.exampleMessages, meta && (meta.example_dialogs || meta.mes_example), options,
+    ),
+  };
+}
+
+function restoredPromptFields(payload, options) {
+  const fields = fieldsFromPayload(payload);
+  return Object.fromEntries(Object.entries(fields)
+    .map(([key, value]) => [key, restoreMacros(value, options)]));
+}
+
+function restoredMetaFields(meta, options) {
+  const fields = fieldsFromMeta(meta);
+  return Object.fromEntries(Object.entries(fields)
+    .map(([key, value]) => [key, restoreMacros(value, options)]));
 }
 
 function conversationSummary(chat, chatId) {
@@ -603,17 +731,22 @@ function conversationSummary(chat, chatId) {
  * character card. Does NOT auto-build with LLM — user triggers that manually.
  */
 function assembleResult(
-  fullCap, probePayload, card, ctx, meta, avatarBase64, publicContents, extractionChat = null,
+  fullCap, probePayload, card, ctx, meta, avatarBase64, publicContents, extractionChat = null, macroUserName = '',
 ) {
   const sep = separate(fullCap.payload, '', publicContents);
+  // A source-field match reflects the exact value JanitorAI expanded, so prefer
+  // it over account-profile metadata whenever it is available.
+  const resolvedUserName = inferMacroUserName(meta, fullCap.payload) || macroUserName;
+  const macros = macroOptions(fullCap.payload, meta, resolvedUserName);
+  const separatedLorebook = restoreMacros(sep.lorebookText, macros);
   const fieldInjections = scanInjectedFields({
-    capture: fieldsFromPayload(fullCap.payload),
-    probe: probePayload ? fieldsFromPayload(probePayload) : null,
-    clean: isCardPublic(meta) ? fieldsFromMeta(meta) : null,
+    capture: restoredPromptFields(fullCap.payload, macros),
+    probe: probePayload ? restoredPromptFields(probePayload, macros) : null,
+    clean: isCardPublic(meta) ? restoredMetaFields(meta, macros) : null,
     publicContents,
-    existing: sep.lorebookText,
+    existing: separatedLorebook,
   });
-  const lorebookText = appendRecovered(sep.lorebookText, fieldInjections);
+  const lorebookText = appendRecovered(separatedLorebook, fieldInjections);
   const provenance = sep.removed.concat(fieldInjections.map((block) => ({
     label: `injected${block.field[0].toUpperCase()}${block.field.slice(1)}`,
     text: block.text,
@@ -630,7 +763,7 @@ function assembleResult(
 
   // Public definition → take the real fields verbatim; otherwise reconstruct the
   // card from the leaked generateAlpha prompt. `definitionSource` tells the UI.
-  const character = isCardPublic(meta) ? buildPublicCharacter(meta, avatarBase64) : {
+  const rawCharacter = isCardPublic(meta) ? buildPublicCharacter(meta, avatarBase64) : {
     name: extractCharName(payload) || (meta && meta.name) || '',
     avatarBase64: avatarBase64 || '',
     description: extractCard(payload) || card || '',
@@ -643,14 +776,17 @@ function assembleResult(
     tags: (meta && meta.custom_tags) || [],
     definitionSource: 'reconstructed',
   };
+  const character = isCardPublic(meta)
+    ? rawCharacter : restoreCharacterFromSource(rawCharacter, meta, macros);
 
   return {
     lorebookText,
-    card,
+    card: restoreMacros(card, macros),
     catalog: combineContext(ctx),
     character,
     fieldInjections,
     provenance,
+    macroUserName: resolvedUserName,
   };
 }
 
@@ -815,7 +951,7 @@ app.post('/api/capture', async (req, res) => {
     // requests a fresh trigger run with different source selections or keywords.
     if (rec.payload && !req.body.force) {
       const built = assembleResult(
-        rec, rec.probePayload, '', rec.context, meta, avatarBase64, publicContents,
+        rec, rec.probePayload, '', rec.context, meta, avatarBase64, publicContents, null, rec.macroUserName,
       );
       return res.json({
         id: rec.id, lorebookText: built.lorebookText, character: built.character, reused: true,
@@ -836,18 +972,19 @@ app.post('/api/capture', async (req, res) => {
         console.warn('[profile] could not enter extraction mode:', e.message);
       }
 
-      let personaId = null;
-      let chatId = null;
+        let capturePersona = null;
+        let macroUserName = '';
+        let chatId = null;
       try {
         await page.goto(rec.url || `https://janitorai.com/characters/${characterId}`,
           { waitUntil: 'domcontentloaded' }).catch(() => { });
 
         try {
-          const persona = await ensureUserMacroPersona(page);
-          personaId = persona.id;
-          browser.setPersonaOverride(persona);
+          capturePersona = await createMacroCapturePersona(page);
+          macroUserName = capturePersona.name;
+          browser.setPersonaOverride(capturePersona);
         } catch (e) {
-          console.warn('[persona] could not ensure {{user}} persona:', e.message);
+          throw new Error(`could not create isolated macro-capture persona: ${e.message}`);
         }
 
         // A new JAI chat always starts with the character greeting. Keep it for
@@ -892,11 +1029,11 @@ app.post('/api/capture', async (req, res) => {
         const { card, probeCap, fullCap } = await runAutoTrigger(
           page, trigger.text, trigger.includeCard,
         );
-
         const result = assembleResult(
-          fullCap, probeCap.payload, card, rec.context, meta, avatarBase64, publicContents, extractionChat,
+          fullCap, probeCap.payload, card, rec.context, meta, avatarBase64, publicContents, extractionChat, macroUserName,
         );
         store.attachProbePayload(rec.id, probeCap.payload);
+        if (result.macroUserName) store.attachMacroUserName(rec.id, result.macroUserName);
         console.log(`[capture] neutral probe stored with ${rec.id}`);
         store.attachCardData(fullCap.id, result.character);
 
@@ -919,10 +1056,8 @@ app.post('/api/capture', async (req, res) => {
         pendingCaptureId = null;
         browser.setPersonaOverride(null);
         browser.setNextMessageExclusions([]);
-        if (personaId) {
-          await deletePersona(page, personaId)
-            .catch((e) => console.warn('[persona] delete failed:', e.message));
-        }
+        if (capturePersona) await deletePersona(page, capturePersona.id)
+          .catch((e) => console.warn('[persona] isolated capture persona cleanup failed:', e.message));
         if (profileSnapshot) {
           await restoreProfile(page, profileSnapshot)
             .catch((e) => console.warn('[profile] restore failed:', e.message));
@@ -1372,4 +1507,7 @@ if (require.main === module) {
   }
 }
 
-module.exports = { app, assembleResult, buildLlmContext, collectGreetings };
+module.exports = {
+  app, assembleResult, buildLlmContext, collectGreetings, profileDisplayName, inferMacroUserName,
+  restoreFieldFromTemplate,
+};
