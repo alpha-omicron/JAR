@@ -454,21 +454,47 @@ function combineContext(ctx) {
 
 /**
  * Collect every opening message a character ships with, de-duplicated and in
- * order. JanitorAI exposes multiple greetings as `first_messages` (array);
- * older/single-greeting cards only have `first_message`. The captured prompt's
- * greeting is used as a fallback when metadata is unavailable.
+ * order. The newly-created extraction chat is the best source for hidden cards:
+ * its `character.first_messages` has the configured greetings even when catalog
+ * metadata omits them. The captured probe response is only a legacy fallback;
+ * it is generated after JAR sends `.` and is not normally an opening greeting.
  * @returns {string[]} greetings — index 0 is the primary, the rest are alternates.
  */
-function collectGreetings(meta, capturedFirst) {
+function collectGreetings(meta, capturedFirst, extractionChat, storedCharacter) {
   const out = [];
   const push = (v) => {
     const s = String(v == null ? '' : v).trim();
     if (s && !out.includes(s)) out.push(s);
   };
-  if (meta) {
-    if (Array.isArray(meta.first_messages)) meta.first_messages.forEach(push);
-    push(meta.first_message);
-    if (Array.isArray(meta.alternate_greetings)) meta.alternate_greetings.forEach(push);
+  const pushCharacterGreetings = (character) => {
+    if (!character || typeof character !== 'object') return;
+    if (Array.isArray(character.first_messages)) character.first_messages.forEach(push);
+    push(character.first_message);
+    if (Array.isArray(character.alternate_greetings)) character.alternate_greetings.forEach(push);
+  };
+
+  // JanitorAI puts the character data on the extraction-chat archive. If it
+  // lacks configured greeting fields, its initial bot message is still the real
+  // opening greeting, unlike the assistant response from a later `.` probe.
+  const chatCharacter = extractionChat && extractionChat.character;
+  pushCharacterGreetings(chatCharacter);
+  if (!out.length && extractionChat) {
+    const messages = Array.isArray(extractionChat.chatMessages)
+      ? extractionChat.chatMessages : [];
+    const opening = messages.find((message) => message && message.is_bot === true);
+    if (opening) push(opening.message);
+  }
+
+  // A prior recovered card survives later /api/separate or reused-capture calls,
+  // which do not have the temporary chat archive in memory.
+  if (!out.length && storedCharacter) {
+    push(storedCharacter.firstMessage);
+    if (Array.isArray(storedCharacter.alternateGreetings)) {
+      storedCharacter.alternateGreetings.forEach(push);
+    }
+  }
+  if (!out.length && meta) {
+    pushCharacterGreetings(meta);
   }
   if (!out.length) push(capturedFirst);
   return out;
@@ -541,7 +567,9 @@ function conversationSummary(chat, chatId) {
  * Assemble the capture result: isolated lorebook text and the extracted
  * character card. Does NOT auto-build with LLM — user triggers that manually.
  */
-function assembleResult(fullCap, probePayload, card, ctx, meta, avatarBase64, publicContents) {
+function assembleResult(
+  fullCap, probePayload, card, ctx, meta, avatarBase64, publicContents, extractionChat = null,
+) {
   const sep = separate(fullCap.payload, '', publicContents);
   const fieldInjections = scanInjectedFields({
     capture: fieldsFromPayload(fullCap.payload),
@@ -561,7 +589,9 @@ function assembleResult(fullCap, probePayload, card, ctx, meta, avatarBase64, pu
   // from the neutral "." probe instead, falling back to the trigger only for
   // older captures that have no saved probe at all.
   const payload = probePayload || fullCap.payload;
-  const greetings = collectGreetings(meta, extractFirstMessage(payload));
+  const greetings = collectGreetings(
+    meta, extractFirstMessage(payload), extractionChat, fullCap && fullCap.character,
+  );
 
   // Public definition → take the real fields verbatim; otherwise reconstruct the
   // card from the leaked generateAlpha prompt. `definitionSource` tells the UI.
@@ -787,9 +817,10 @@ app.post('/api/capture', async (req, res) => {
         const previousChatId = rec.chatId;
         chatId = await createChat(page, characterId);
         let greetingIds;
+        let extractionChat;
         try {
-          const freshChat = await fetchChat(page, chatId);
-          greetingIds = freshGreetingMessageIds(freshChat);
+          extractionChat = await fetchChat(page, chatId);
+          greetingIds = freshGreetingMessageIds(extractionChat);
           if (!greetingIds.length) {
             throw new Error('new extraction chat has no identifiable opening greeting');
           }
@@ -822,7 +853,7 @@ app.post('/api/capture', async (req, res) => {
         );
 
         const result = assembleResult(
-          fullCap, probeCap.payload, card, rec.context, meta, avatarBase64, publicContents,
+          fullCap, probeCap.payload, card, rec.context, meta, avatarBase64, publicContents, extractionChat,
         );
         store.attachProbePayload(rec.id, probeCap.payload);
         console.log(`[capture] neutral probe stored with ${rec.id}`);
@@ -1300,4 +1331,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { app, assembleResult, buildLlmContext };
+module.exports = { app, assembleResult, buildLlmContext, collectGreetings };

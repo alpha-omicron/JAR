@@ -15,6 +15,7 @@
     "test:field-diff": "node test/fieldDiff.test.js",
     "test:build-context": "node test/buildContext.test.js",
     "test:probe-exclusion": "node test/probeExclusion.test.js",
+    "test:greeting-recovery": "node test/greetingRecovery.test.js",
     "postinstall": "playwright install chromium"
   },
   "dependencies": {
