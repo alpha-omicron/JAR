@@ -13,6 +13,7 @@
     "test:probe-capture": "node test/probeCapture.test.js",
     "test:proxy-permission": "node test/proxyPermission.test.js",
     "test:field-diff": "node test/fieldDiff.test.js",
+    "test:build-context": "node test/buildContext.test.js",
     "postinstall": "playwright install chromium"
   },
   "dependencies": {

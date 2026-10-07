@@ -99,11 +99,15 @@ function stripHtml(s) {
 function contextPartsFromRec(rec) {
   const ctx = (rec && rec.context) || {};
   const ch = (rec && rec.character) || {};
+  const greetings = [ch.firstMessage, ...(ch.alternateGreetings || [])]
+    .map((text) => String(text || '').trim())
+    .filter(Boolean)
+    .join('\n\n');
   return {
     card: String(ch.description || '').trim(),
     catalog: String(ctx.description || '').trim(),
-    scenario: String(ctx.scenario || '').trim(),
-    greetings: String(ctx.greetings || '').trim(),
+    scenario: String(ch.scenario || ctx.scenario || '').trim(),
+    greetings: greetings || String(ctx.greetings || '').trim(),
     lorebookDescs: String(ctx.lorebooks || '').trim(),
   };
 }

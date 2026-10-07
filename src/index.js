@@ -286,29 +286,13 @@ function resolveExtractInputs(req) {
       ).lorebookText;
     }
   }
-  // Context sources for key inference — each independently selectable from the
-  // UI. Custom text is an extra opt-in source. First message(s) default OFF
-  // (they can be large); the rest default ON when present.
-  const useCard = req.body.useCard !== false;
-  const useCatalog = req.body.useCatalog !== false;
-  const useScenario = req.body.useScenario !== false;
-  const useGreetings = req.body.useGreetings === true;
-  const useLorebookDescs = req.body.useLorebookDescs !== false;
   // Stored structured context, with a fallback for older captures that only
   // have the legacy combined `catalog` string.
   const ctx = (rec && rec.context)
     || (rec && rec.catalog ? { description: rec.catalog } : {})
     || {};
-  const card = useCard
-    ? ((rec && rec.payload ? extractCard(rec.payload) : '') || req.body.knownCard || '')
-    : '';
   const opts = {
-    card,
-    catalog: useCatalog ? (ctx.description || '') : '',
-    scenario: useScenario ? (ctx.scenario || '') : '',
-    greetings: useGreetings ? (ctx.greetings || '') : '',
-    lorebookDescs: useLorebookDescs ? (ctx.lorebooks || '') : '',
-    extra: String(req.body.extraContext || '').trim(),
+    ...buildLlmContext(rec, req.body, ctx),
     // When the raw text is a JanitorAI "advanced" / Nine API lorebook (JS source
     // rather than concatenated entry bodies), select the JS-aware build prompt.
     fromJs: req.body.fromJs === true,
@@ -317,6 +301,42 @@ function resolveExtractInputs(req) {
     fromRaw,
   };
   return { lorebookText, opts };
+}
+
+/**
+ * Build LLM context from the cleanest available character source. The triggered
+ * capture is deliberately last: it can contain lore injected into card fields.
+ */
+function buildLlmContext(rec, body = {}, ctx = {}) {
+  // Context sources for key inference — each independently selectable from the
+  // UI. Custom text is an extra opt-in source. First message(s) default OFF
+  // (they can be large); the rest default ON when present.
+  const useCard = body.useCard !== false;
+  const useCatalog = body.useCatalog !== false;
+  const useScenario = body.useScenario !== false;
+  const useGreetings = body.useGreetings === true;
+  const useLorebookDescs = body.useLorebookDescs !== false;
+  const character = (rec && rec.character) || {};
+  const baselinePayload = rec && (rec.probePayload || rec.payload);
+  const greetingParts = [character.firstMessage, ...(character.alternateGreetings || [])]
+    .map((text) => String(text || '').trim())
+    .filter(Boolean);
+
+  const card = useCard
+    ? (String(character.description || '').trim()
+      || extractCard(baselinePayload)
+      || body.knownCard || '')
+    : '';
+  return {
+    card,
+    catalog: useCatalog ? (ctx.description || '') : '',
+    scenario: useScenario
+      ? (String(character.scenario || '').trim() || extractScenario(baselinePayload) || ctx.scenario || '')
+      : '',
+    greetings: useGreetings ? (greetingParts.join('\n\n') || ctx.greetings || '') : '',
+    lorebookDescs: useLorebookDescs ? (ctx.lorebooks || '') : '',
+    extra: String(body.extraContext || '').trim(),
+  };
 }
 
 app.post('/api/extract', async (req, res) => {
@@ -1275,4 +1295,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { app, assembleResult };
+module.exports = { app, assembleResult, buildLlmContext };
