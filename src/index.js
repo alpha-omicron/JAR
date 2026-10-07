@@ -21,6 +21,7 @@ const {
 const { fetchPublicLorebooks, publicEntryContents } = require('./publiclore');
 const { enterExtractionMode, restoreProfile } = require('./profile');
 const { ensureUserMacroPersona, deletePersona } = require('./personas');
+const { allowsProxy, proxyForbiddenError } = require('./proxyPermission');
 const { countTokens } = require('./tokenizer');
 const saucepan = require('./saucepan');
 const { parseChatId, toJsonl } = require('./chatExport');
@@ -71,7 +72,7 @@ let pendingCaptureId = null;
 const captureWaiters = [];
 function waitNextCapture(timeout) {
   return new Promise((resolve, reject) => {
-    const w = { resolve };
+    const w = { resolve, reject };
     w.timer = setTimeout(() => {
       const i = captureWaiters.indexOf(w);
       if (i >= 0) captureWaiters.splice(i, 1);
@@ -85,6 +86,13 @@ function resolveWaiters(stored) {
     const w = captureWaiters.shift();
     clearTimeout(w.timer);
     w.resolve(stored);
+  }
+}
+function rejectWaiters(error) {
+  while (captureWaiters.length) {
+    const w = captureWaiters.shift();
+    clearTimeout(w.timer);
+    w.reject(error);
   }
 }
 
@@ -121,6 +129,9 @@ const browser = new BrowserManager({
     console.log(`[capture] ${stored.source} ${stored.id} (${stored.payload.model || '?'})`);
     broadcast('capture', { id: stored.id });
     resolveWaiters(stored);
+  },
+  onCaptureError: (error) => {
+    rejectWaiters(error);
   },
 });
 
@@ -674,6 +685,9 @@ app.post('/api/capture', async (req, res) => {
     if (!rec) return res.status(404).json({ error: 'not found' });
 
     const meta = rec.meta || null;
+    if (!allowsProxy(meta)) {
+      return res.status(422).json({ error: proxyForbiddenError().message, code: 'PROXY_FORBIDDEN' });
+    }
     const publicContents = publicEntryContents(rec.publicLorebooks);
     const avatarBase64 = (rec.character && rec.character.avatarBase64) || '';
 

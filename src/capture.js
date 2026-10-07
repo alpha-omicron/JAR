@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
 const { pickChatPage, authedFetch, checkLogin } = require('./autotrigger');
+const { isProxyForbiddenResponse, proxyForbiddenError } = require('./proxyPermission');
 
 const ORIGIN = 'https://janitorai.com';
 
@@ -160,13 +161,14 @@ function looksLikePayload(obj) {
  * @param {string} opts.userDataDir  persistent profile dir (login + CF clearance)
  * @param {'visible'|'background'} opts.mode
  * @param {(rec:{url:string,payload:object,source:string})=>void} opts.onCapture
+ * @param {(error:Error)=>void} [opts.onCaptureError] fatal capture failure callback
  * @param {() => (object|null)} [opts.getPersonaOverride] returns the persona to
  *        force into the outgoing `/generateAlpha` REQUEST (or null for none) —
  *        see {@link installPersonaOverride}.
  * @returns {Promise<import('playwright').BrowserContext>}
  */
 async function startCapture({
-  userDataDir, mode = 'background', onCapture, getPersonaOverride,
+  userDataDir, mode = 'background', onCapture, onCaptureError, getPersonaOverride,
 }) {
   const dir = path.resolve(userDataDir || './user-data');
   // Closing then immediately relaunching (e.g. switching visible→background
@@ -248,6 +250,14 @@ async function startCapture({
   context.on('response', async (response) => {
     const url = response.url();
     if (!url.includes('/generateAlpha')) return;
+    if (response.status() === 403) {
+      const text = await response.text().catch(() => '');
+      if (isProxyForbiddenResponse(response.status(), text)) {
+        console.warn('[capture] JanitorAI refused proxy generation');
+        onCaptureError?.(proxyForbiddenError());
+        return;
+      }
+    }
     // Brotli-encoded JSON (Playwright decompresses for us). The request sets
     // accept: text/event-stream, so be defensive: if .json() can't parse it, read
     // raw text and pull the JSON object out before giving up.
@@ -316,6 +326,7 @@ class BrowserManager {
       userDataDir: this.opts.userDataDir,
       mode,
       onCapture: this.opts.onCapture,
+      onCaptureError: this.opts.onCaptureError,
       getPersonaOverride: () => this.personaOverride,
     })
       .then((ctx) => {
