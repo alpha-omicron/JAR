@@ -2,7 +2,8 @@
 
 JAR (Janitor AI Ripper) — extract lorebooks and characters from JanitorAI, both public and private, locally on your PC and automated.
 
-> [!IMPORTANT] **Maintained fork:**
+> [!IMPORTANT]
+> **Maintained fork**
 >
 > The [original JAR project](https://github.com/hydall/JAR) was deprecated in favor of [Glaze](https://github.com/hydall/Glaze). This repository is an independent, maintained continuation of JAR for users who want the standalone extraction tool.
 >
