@@ -529,6 +529,65 @@ function assembleResult(fullCap, probePayload, card, ctx, meta, avatarBase64, pu
   };
 }
 
+/** Fetch the catalog-facing character data without generating a chat prompt. */
+async function inspectCharacter(charUrl, characterId) {
+  return browser.withBrowser(async (ctx) => {
+    await requireLogin(ctx);
+    const pages = ctx.pages();
+    const page = pages.find((p) => p.url().includes('janitorai.com')) || pages[0]
+      || (await ctx.newPage());
+    await page.goto(charUrl, { waitUntil: 'domcontentloaded' }).catch(() => { });
+
+    const meta = await fetchCharacter(page, characterId).catch(() => null);
+    const ctxParts = buildContextParts(meta);
+
+    let publicLorebooks = [];
+    try {
+      publicLorebooks = await fetchPublicLorebooks(page, meta);
+      const ok = publicLorebooks.filter((b) => b.accessible).length;
+      console.log(`[publiclore] ${publicLorebooks.length} attached, ${ok} downloadable`);
+      // The character metadata only carries lorebook titles — replace the
+      // titles-only context with the real page descriptions now that the
+      // lorebook pages have been fetched.
+      if (publicLorebooks.length) {
+        ctxParts.lorebooks = lorebookDescsFromBooks(publicLorebooks);
+      }
+    } catch (e) {
+      console.warn('[publiclore] fetch failed:', e.message);
+    }
+
+    let avatarUrl = await getAvatarUrl(page);
+    if (!avatarUrl && meta) {
+      const av = meta.avatar || meta.profile_image || '';
+      if (av) avatarUrl = /^https?:\/\//i.test(av) ? av : `https://ella.janitorai.com/bot-avatars/${av}?width=1200`;
+    }
+    const avatarBase64 = avatarUrl ? await downloadAvatar(page, avatarUrl) : '';
+
+    return { meta, ctxParts, publicLorebooks, avatarBase64 };
+  }, { mode: getExtractionMode() });
+}
+
+function refreshedCharacter(rec, out) {
+  if (isCardPublic(out.meta)) return buildPublicCharacter(out.meta, out.avatarBase64);
+
+  // A catalog refresh cannot recover a hidden definition. Keep a prior prompt- or
+  // chat-derived card visible until the user explicitly re-extracts it, but update
+  // the safe catalog fields that accompany it.
+  const existing = rec.character || {};
+  if (existing.definitionSource === 'reconstructed' || existing.definitionSource === 'chat') {
+    return {
+      ...existing,
+      name: (out.meta && out.meta.name) || existing.name || '',
+      avatarBase64: out.avatarBase64 || existing.avatarBase64 || '',
+    };
+  }
+  return {
+    name: (out.meta && out.meta.name) || '',
+    avatarBase64: out.avatarBase64 || '',
+    definitionSource: 'pending',
+  };
+}
+
 // INSPECT a character from its URL — read-only. Pulls metadata, avatar, public
 // lorebooks and key-inference context WITHOUT running the generateAlpha
 // extraction. Anything public (the card when `showdefinition` is set, downloadable
@@ -540,40 +599,7 @@ app.post('/api/inspect', async (req, res) => {
     const charUrl = /^https?:\/\//i.test(req.body.url)
       ? req.body.url
       : `https://janitorai.com/characters/${characterId}`;
-    const out = await browser.withBrowser(async (ctx) => {
-      await requireLogin(ctx);
-      const pages = ctx.pages();
-      const page = pages.find((p) => p.url().includes('janitorai.com')) || pages[0]
-        || (await ctx.newPage());
-      await page.goto(charUrl, { waitUntil: 'domcontentloaded' }).catch(() => { });
-
-      const meta = await fetchCharacter(page, characterId).catch(() => null);
-      const ctxParts = buildContextParts(meta);
-
-      let publicLorebooks = [];
-      try {
-        publicLorebooks = await fetchPublicLorebooks(page, meta);
-        const ok = publicLorebooks.filter((b) => b.accessible).length;
-        console.log(`[publiclore] ${publicLorebooks.length} attached, ${ok} downloadable`);
-        // The character metadata only carries lorebook titles — replace the
-        // titles-only context with the real page descriptions now that the
-        // lorebook pages have been fetched.
-        if (publicLorebooks.length) {
-          ctxParts.lorebooks = lorebookDescsFromBooks(publicLorebooks);
-        }
-      } catch (e) {
-        console.warn('[publiclore] fetch failed:', e.message);
-      }
-
-      let avatarUrl = await getAvatarUrl(page);
-      if (!avatarUrl && meta) {
-        const av = meta.avatar || meta.profile_image || '';
-        if (av) avatarUrl = /^https?:\/\//i.test(av) ? av : `https://ella.janitorai.com/bot-avatars/${av}?width=1200`;
-      }
-      const avatarBase64 = avatarUrl ? await downloadAvatar(page, avatarUrl) : '';
-
-      return { meta, ctxParts, publicLorebooks, avatarBase64 };
-    }, { mode: getExtractionMode() });
+    const out = await inspectCharacter(charUrl, characterId);
 
     const cardPublic = isCardPublic(out.meta);
     const character = cardPublic
@@ -604,6 +630,34 @@ app.post('/api/inspect', async (req, res) => {
       character,
       publicLorebooks: out.publicLorebooks,
     });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// Refresh catalog-facing data on an existing record. This intentionally does not
+// run a chat capture, so it can update public cards/lorebooks without replacing a
+// hidden card or closed-lorebook extraction.
+app.post('/api/captures/:id/refresh', async (req, res) => {
+  try {
+    const rec = store.get(req.params.id);
+    if (!rec) return res.status(404).json({ error: 'not found' });
+    const characterId = rec.characterId || parseCharacterId(rec.url);
+    const charUrl = rec.url || `https://janitorai.com/characters/${characterId}`;
+    const out = await inspectCharacter(charUrl, characterId);
+    const updated = store.refreshInspection(rec.id, {
+      url: charUrl,
+      characterId,
+      characterName: (out.meta && out.meta.name) || rec.characterName,
+      meta: out.meta,
+      context: out.ctxParts,
+      publicLorebooks: out.publicLorebooks,
+      avatarBase64: out.avatarBase64,
+      cardPublic: isCardPublic(out.meta),
+      character: refreshedCharacter(rec, out),
+    });
+    broadcast('capture', { id: updated.id });
+    res.json({ id: updated.id, cardPublic: updated.cardPublic });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }

@@ -160,6 +160,24 @@ function attachProbePayload(id, probePayload) {
   return true;
 }
 
+/** Update catalog-derived data without replacing any captured prompt payloads. */
+function refreshInspection(id, patch) {
+  const rec = get(id);
+  if (!rec) return null;
+  rec.url = patch.url || rec.url;
+  rec.characterId = patch.characterId || rec.characterId;
+  rec.characterName = patch.characterName || rec.characterName;
+  rec.meta = patch.meta || null;
+  rec.context = patch.context || null;
+  rec.publicLorebooks = patch.publicLorebooks || [];
+  rec.avatarBase64 = patch.avatarBase64 || '';
+  rec.cardPublic = !!patch.cardPublic;
+  if (patch.character) rec.character = patch.character;
+  rec.refreshedAt = Date.now();
+  fs.writeFileSync(fileFor(id), JSON.stringify(rec, null, 2), 'utf8');
+  return rec;
+}
+
 function systemContent(payload) {
   const msgs = payload && Array.isArray(payload.messages) ? payload.messages : [];
   const sys = msgs.find((m) => m && m.role === 'system');
@@ -274,7 +292,7 @@ function clearChatId(id) {
 
 module.exports = {
   save, saveInspection, attachPayload, list, get, remove,
-  attachProbePayload, attachCatalog, attachCharacter, attachCardData,
+  attachProbePayload, refreshInspection, attachCatalog, attachCharacter, attachCardData,
   attachPublicLorebooks, attachChatId, clearChatId,
   findByCharacterId, attachConversation, updateConversation, removeConversation,
   systemContent, DIR,

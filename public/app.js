@@ -319,8 +319,23 @@ async function selectCapture(id) {
 
   fillCharacter(rec.character || null, isNewSelection);
 
-  // Card tab: a private, not-yet-captured card gets an "extract" button.
-  $('cardExtractBar').classList.toggle('hidden', captured || state.cardPublic);
+  // The card tab owns all refresh/re-extract actions. A catalog refresh is safe
+  // for every record; a prompt capture is offered only when it can recover a
+  // private definition or closed lorebook content.
+  const hasClosed = (rec.publicLorebooks || []).some((book) => book && !book.accessible && !book.isJs);
+  const canExtract = !captured && (!state.cardPublic || hasClosed);
+  const canReextract = captured && (!state.cardPublic || hasClosed);
+  $('cardExtractBtn').classList.toggle('hidden', !(canExtract || canReextract));
+  const actionLabel = canReextract
+    ? (state.cardPublic ? 'btnReextractLorebooks' : 'btnReextractPrivate')
+    : (state.cardPublic ? 'btnExtractLorebooks' : (hasClosed ? 'btnExtractPrivateAndLorebooks' : 'btnExtractCard'));
+  $('cardExtractBtn').querySelector('span').textContent = t(actionLabel);
+  const actionHint = canReextract
+    ? 'cardReextractHint'
+    : (state.cardPublic ? 'cardExtractLoreHint' : (hasClosed ? 'cardExtractBothHint' : 'cardPrivateHint'));
+  $('cardExtractHint').textContent = (canExtract || canReextract)
+    ? t(actionHint)
+    : t('cardRefreshHint');
   $('cardExtractStatus').textContent = '';
 
   // reset working areas
@@ -332,7 +347,6 @@ async function selectCapture(id) {
   $('buildResult').classList.add('hidden');
   $('promptPreview').classList.add('hidden');
   $('promptPre').textContent = '';
-  $('loreExtractStatus').textContent = '';
   $('linkChatStatus').textContent = '';
   renderPublicBooks(rec.publicLorebooks || []);
   renderConversations(rec);
@@ -381,14 +395,14 @@ function updateLorebookEmpty() {
   $('dlExtractedRow').classList.toggle('hidden', adv);
   $('extractedDivider').classList.toggle('hidden', adv);
 
+  // Prompt capture belongs to the character-card tab because it can also replace
+  // the private definition. This tab only configures its lorebook trigger text.
   $('loreExtractBlock').classList.toggle('hidden', !hasClosed);
   // With only public lorebooks (and nothing extracted) there's nothing to build.
   const onlyPublic = openCount > 0 && closedCount === 0 && !hasEntries;
   $('buildBlock').classList.toggle('hidden', onlyPublic);
   $('buildPendingHint').classList.toggle('hidden', captured);
   syncBuildActions();
-  const extractLabel = captured ? 'btnReextractLore' : 'btnExtractLore';
-  $('loreExtractBtn').querySelector('span').textContent = t(extractLabel);
 }
 
 function syncBuildActions() {
@@ -1187,7 +1201,7 @@ async function runCardExtract() {
     await api('/api/capture', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: state.selected }),
+      body: JSON.stringify({ id: state.selected, force: state.captured, trigger: triggerSelection() }),
     });
     await selectCapture(state.selected);
   } catch (e) {
@@ -1197,25 +1211,17 @@ async function runCardExtract() {
   }
 }
 
-// Lorebook tab "extract": run the generateAlpha capture for the closed lorebook.
-// Trigger sources are intentionally independent from the later LLM build context.
-async function runLoreExtract() {
+async function refreshCharacter() {
   if (!state.selected) return;
-  const id = state.selected;
-  const trigger = triggerSelection();
-  $('loreExtractBtn').disabled = true;
-  $('loreExtractStatus').innerHTML = `<span class="extracting">${t('extracting')}</span>`;
+  $('cardRefreshBtn').disabled = true;
+  $('cardExtractStatus').innerHTML = `<span class="extracting">${t('inspecting')}</span>`;
   try {
-    await api('/api/capture', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, force: state.captured, trigger }),
-    });
-    await selectCapture(id);
+    await api(`/api/captures/${state.selected}/refresh`, { method: 'POST' });
+    await selectCapture(state.selected);
   } catch (e) {
-    setStatus($('loreExtractStatus'), 'x', e.message);
+    setStatus($('cardExtractStatus'), 'x', e.message);
   } finally {
-    $('loreExtractBtn').disabled = false;
+    $('cardRefreshBtn').disabled = false;
   }
 }
 
@@ -1413,7 +1419,7 @@ $('dlExtractedBtn').addEventListener('click', downloadExtracted);
 $('buildBtn').addEventListener('click', runBuild);
 $('previewBtn').addEventListener('click', previewPrompt);
 $('cardExtractBtn').addEventListener('click', runCardExtract);
-$('loreExtractBtn').addEventListener('click', runLoreExtract);
+$('cardRefreshBtn').addEventListener('click', refreshCharacter);
 $('useExtra').addEventListener('change', () => {
   $('extraContext').classList.toggle('hidden', !$('useExtra').checked);
 });

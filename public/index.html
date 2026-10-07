@@ -154,10 +154,11 @@
 
         <!-- Tab: Character Card -->
         <div id="tabCard" class="tab-panel active">
-          <div id="cardExtractBar" class="block extract-bar hidden">
-            <p class="hint" data-i18n="cardPrivateHint">this card is private — click Extract to reconstruct it from the prompt.</p>
+          <div id="cardExtractBar" class="block extract-bar">
+            <p id="cardExtractHint" class="hint" data-i18n="cardRefreshHint">refresh public character data, avatar, and lorebooks from JanitorAI.</p>
             <div class="row">
-              <button id="cardExtractBtn" class="primary"><svg class="icon"><use href="#i-extract"/></svg><span data-i18n="btnExtractCard">extract card</span></button>
+              <button id="cardRefreshBtn" class="ghost"><svg class="icon"><use href="#i-refresh"/></svg><span data-i18n="btnRefreshCharacter">refresh JanitorAI data</span></button>
+              <button id="cardExtractBtn" class="primary hidden"><svg class="icon"><use href="#i-extract"/></svg><span data-i18n="btnExtractCard">extract card</span></button>
               <span id="cardExtractStatus" class="muted"></span>
             </div>
           </div>
@@ -232,8 +233,8 @@
 
           <!-- On-demand closed-lorebook extraction (runs generateAlpha) -->
           <div id="loreExtractBlock" class="block extract-bar hidden">
-            <h3 data-i18n="loreExtractTitle">extract closed lorebook</h3>
-            <p class="hint" data-i18n="loreExtractHint">choose text to send in the extraction chat and trigger lorebook entries.</p>
+            <h3 data-i18n="loreTriggerSettingsTitle">closed-lorebook trigger settings</h3>
+            <p class="hint" data-i18n="loreTriggerSettingsHint">choose text to send in the extraction chat; run extraction from the character-card tab.</p>
             <h4 data-i18n="triggerSourcesTitle">trigger text sent to JanitorAI</h4>
             <div class="context-sources" id="triggerSources">
               <div class="ctx-block" data-ctx="card">
@@ -292,10 +293,6 @@
               <summary data-i18n="triggerPreviewTitle">text sent to JanitorAI</summary>
               <pre id="triggerPreviewPre" class="scroll"></pre>
             </details>
-            <div class="row">
-              <button id="loreExtractBtn" class="primary"><svg class="icon"><use href="#i-extract"/></svg><span data-i18n="btnExtractLore">extract</span></button>
-              <span id="loreExtractStatus" class="muted"></span>
-            </div>
           </div>
 
           <div id="buildBlock" class="block hidden">
