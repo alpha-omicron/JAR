@@ -9,9 +9,10 @@ JAR (Janitor AI Ripper) — extract lorebooks and characters from JanitorAI, bot
 >
 > Key additions in this continuation:
 >
-> - JanitorAI conversation import/linking plus raw JSON and SillyTavern JSONL exports, including alternate replies as swipes.
-> - More reliable recovery of hidden character cards, greetings, and closed lorebooks, with portable `{{char}}` / `{{user}}` macros.
-> - Public lorebook exports and reconstruction support for advanced-script lorebooks.
+> - JanitorAI chat conversation loading and exports (raw JSON and SillyTavern JSONL), including alternate replies as swipes.
+> - More reliable recovery of hidden character cards, greetings, and automatic macro restoration (`{{char}}` / `{{user}}`).
+> - Improved handling of closed lorebooks and general lorebook UI/UX.
+> - Public lorebook exports and proper reconstruction support for advanced-script lorebooks.
 
 ## Requirements
 
