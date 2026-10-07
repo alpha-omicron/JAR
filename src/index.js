@@ -16,13 +16,14 @@ const {
   BrowserManager, openLogin, logout, requireLogin, getStatus, getAvatarUrl, downloadAvatar,
 } = require('./capture');
 const {
-  sendMessage, parseCharacterId, createChat, deleteChat, fetchCharacter, authedFetch,
+  sendMessage, parseCharacterId, createChat, deleteChat, fetchCharacter, fetchChat, fetchCharacterChats, fetchMyProfile, authedFetch,
 } = require('./autotrigger');
 const { fetchPublicLorebooks, publicEntryContents } = require('./publiclore');
 const { enterExtractionMode, restoreProfile } = require('./profile');
 const { ensureUserMacroPersona, deletePersona } = require('./personas');
 const { countTokens } = require('./tokenizer');
 const saucepan = require('./saucepan');
+const { parseChatId, toJsonl } = require('./chatExport');
 
 const PORT = Number(process.env.PORT) || 4577;
 const SETTINGS_FILE = path.join(__dirname, '..', 'settings.local.json');
@@ -455,6 +456,37 @@ function buildPublicCharacter(meta, avatarBase64) {
   };
 }
 
+/** Build a card from the character definition embedded in a chat archive. */
+function buildChatCharacter(chat) {
+  const meta = (chat && chat.character) || {};
+  const greetings = collectGreetings(meta, '');
+  return {
+    name: meta.name || meta.chat_name || '',
+    avatarBase64: '',
+    description: String(meta.personality || meta.description || '').trim(),
+    personality: '',
+    scenario: String(meta.scenario || '').trim(),
+    firstMessage: greetings[0] || '',
+    alternateGreetings: greetings.slice(1),
+    exampleMessages: String(meta.example_dialogs || '').trim(),
+    creatorNotes: String(meta.description || '').trim(),
+    tags: Array.isArray(meta.custom_tags) ? meta.custom_tags : [],
+    definitionSource: 'chat',
+  };
+}
+
+function conversationSummary(chat, chatId) {
+  const meta = (chat && chat.chat) || chat || {};
+  return {
+    chatId: String(chatId || meta.id || meta.chat_id),
+    url: `https://janitorai.com/chats/${chatId || meta.id || meta.chat_id}`,
+    title: String(meta.name || meta.title || meta.chat_name || meta.name_for_display || '').trim(),
+    messageCount: Array.isArray(chat && chat.chatMessages) ? chat.chatMessages.length : (meta.message_count || 0),
+    updatedAt: meta.updated_at || meta.updatedAt || meta.created_at || new Date().toISOString(),
+    createdAt: meta.created_at || meta.createdAt || '',
+  };
+}
+
 /**
  * Assemble the capture result: isolated lorebook text and the extracted
  * character card. Does NOT auto-build with LLM — user triggers that manually.
@@ -716,6 +748,166 @@ app.post('/api/public-lorebooks', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
+});
+
+// Export exactly one conversation owned by the active JanitorAI account. The
+// browser-page fetch retains the Cloudflare/session context; no login token is
+// exposed, and the archive is only returned to the local UI for download.
+app.post('/api/chat-export', async (req, res) => {
+  try {
+    const chatId = parseChatId(req.body && req.body.chat);
+    const result = await browser.withBrowser(async (ctx) => {
+      await requireLogin(ctx);
+      const pages = ctx.pages();
+      const page = pages.find((p) => p.url().includes('janitorai.com')) || pages[0]
+        || (await ctx.newPage());
+      const [chat, profile] = await Promise.all([fetchChat(page, chatId), fetchMyProfile(page)]);
+      return { ...toJsonl(chat, profile), raw: chat };
+    }, { mode: getExtractionMode() });
+    if (!result.sourceMessageCount) return res.status(404).json({ error: 'this conversation has no messages' });
+    res.json({
+      chatId,
+      characterName: result.names.fullName,
+      userName: result.names.userName,
+      messageCount: result.sourceMessageCount,
+      raw: result.raw,
+      jsonl: result.jsonl,
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// Turn a pasted chat/message URL into a character record, then retain the chat
+// id on that record. Later exports always re-fetch the conversation, so they
+// include its latest messages without duplicating whole chat archives on disk.
+app.post('/api/chat-import', async (req, res) => {
+  try {
+    const chatId = parseChatId(req.body && req.body.chat);
+    const chat = await browser.withBrowser(async (ctx) => {
+      await requireLogin(ctx);
+      const pages = ctx.pages();
+      const page = pages.find((p) => p.url().includes('janitorai.com')) || pages[0]
+        || (await ctx.newPage());
+      return fetchChat(page, chatId);
+    }, { mode: getExtractionMode() });
+    const meta = chat.character || {};
+    const characterId = String(meta.id || chat.chat && chat.chat.character_id || '');
+    if (!characterId) throw new Error('the chat archive did not include a character id');
+    const conversation = conversationSummary(chat, chatId);
+    const requestedRecord = req.body && req.body.recordId ? store.get(req.body.recordId) : null;
+    if (req.body && req.body.recordId && !requestedRecord) {
+      return res.status(404).json({ error: 'character record not found' });
+    }
+    if (requestedRecord && requestedRecord.characterId !== characterId) {
+      return res.status(400).json({ error: 'this conversation belongs to a different character' });
+    }
+    let rec = requestedRecord || store.findByCharacterId(characterId);
+    if (rec) {
+      rec = store.attachConversation(rec.id, conversation);
+    } else {
+      const character = buildChatCharacter(chat);
+      rec = store.saveInspection({
+        url: `https://janitorai.com/characters/${characterId}`,
+        source: 'chat',
+        characterId,
+        characterName: character.name,
+        meta,
+        context: buildContextParts(meta),
+        character,
+        cardPublic: true,
+        conversations: [conversation],
+      });
+    }
+    broadcast('capture', { id: rec.id });
+    res.json({ id: rec.id, conversation });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// Find every chat belonging to the signed-in account for this exact character.
+// Archives remain remote until exported; only lightweight IDs/details are kept.
+app.post('/api/character-conversations', async (req, res) => {
+  try {
+    const recordId = req.body && req.body.recordId;
+    const record = store.get(recordId);
+    if (!record) return res.status(404).json({ error: 'character record not found' });
+    if (!record.characterId) return res.status(400).json({ error: 'this character does not have a JanitorAI character id' });
+    const result = await browser.withBrowser(async (ctx) => {
+      await requireLogin(ctx);
+      const pages = ctx.pages();
+      const page = pages.find((p) => p.url().includes('janitorai.com')) || pages[0]
+        || (await ctx.newPage());
+      const listing = await fetchCharacterChats(page, record.characterId);
+      // The current listing is a compact ID list. Re-fetch every returned chat
+      // to confirm it is this character and to retain useful local metadata.
+      const chats = [];
+      for (const listed of listing.chats) {
+        const chatId = String(listed.id || listed.chat_id);
+        const chat = await fetchChat(page, chatId);
+        const characterId = String((chat.character && chat.character.id)
+          || (chat.chat && chat.chat.character_id) || '');
+        if (characterId === record.characterId) chats.push(chat);
+      }
+      return { chats, source: listing.source };
+    }, { mode: getExtractionMode() });
+    let updated = record;
+    for (const chat of result.chats) {
+      const chatId = String((chat.chat && chat.chat.id) || chat.id || chat.chat_id);
+      updated = store.attachConversation(record.id, conversationSummary(chat, chatId));
+    }
+    broadcast('capture', { id: record.id });
+    res.json({ id: record.id, found: result.chats.length, source: result.source, conversations: updated.conversations || [] });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/conversation-refresh', async (req, res) => {
+  try {
+    const record = store.get(req.body && req.body.recordId);
+    const chatId = String(req.body && req.body.chatId || '');
+    if (!record) return res.status(404).json({ error: 'character record not found' });
+    if (!(record.conversations || []).some((item) => String(item && item.chatId) === chatId)) {
+      return res.status(404).json({ error: 'conversation is not linked to this character' });
+    }
+    const chat = await browser.withBrowser(async (ctx) => {
+      await requireLogin(ctx);
+      const pages = ctx.pages();
+      const page = pages.find((p) => p.url().includes('janitorai.com')) || pages[0] || (await ctx.newPage());
+      return fetchChat(page, chatId);
+    }, { mode: getExtractionMode() });
+    const characterId = String((chat.character && chat.character.id) || (chat.chat && chat.chat.character_id) || '');
+    if (characterId !== record.characterId) return res.status(400).json({ error: 'this conversation belongs to a different character' });
+    const prior = (record.conversations || []).find((item) => String(item && item.chatId) === chatId) || {};
+    const summary = conversationSummary(chat, chatId);
+    if (!summary.title) summary.title = prior.title || '';
+    const updated = store.updateConversation(record.id, chatId, summary);
+    broadcast('capture', { id: record.id });
+    res.json({ id: record.id, conversation: updated.conversations.find((item) => item.chatId === chatId) });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/conversation-label', (req, res) => {
+  const recordId = req.body && req.body.recordId;
+  const chatId = req.body && req.body.chatId;
+  const title = String(req.body && req.body.title || '').trim().slice(0, 200);
+  const updated = store.updateConversation(recordId, chatId, { label: title });
+  if (!updated) return res.status(404).json({ error: 'conversation is not linked to this character' });
+  broadcast('capture', { id: recordId });
+  res.json({ id: recordId });
+});
+
+app.post('/api/conversation-delete', (req, res) => {
+  const recordId = req.body && req.body.recordId;
+  const chatId = req.body && req.body.chatId;
+  const updated = store.removeConversation(recordId, chatId);
+  if (!updated) return res.status(404).json({ error: 'character record not found' });
+  broadcast('capture', { id: recordId });
+  res.json({ id: recordId });
 });
 
 // Check login status (opens browser briefly in background, closes after).

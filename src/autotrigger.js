@@ -180,6 +180,169 @@ async function fetchCharacter(page, characterId) {
   }
 }
 
+/** Fetch one of the signed-in user's full conversations, including chatMessages. */
+async function fetchChat(page, chatId) {
+  const result = await authedFetch(page, `https://janitorai.com/hampter/chats/${chatId}`);
+  if (result.status >= 400) throw new Error(`fetch chat failed: HTTP ${result.status}`);
+  try { return JSON.parse(result.body); } catch (e) {
+    throw new Error('fetch chat: response was not JSON');
+  }
+}
+
+/**
+ * List the signed-in account's chats for one character. JanitorAI has used a
+ * few response envelopes over time, so normalize the documented chat-list
+ * fields while keeping the request character-scoped and paginated.
+ */
+function chatListItems(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== 'object') return [];
+  // Current JanitorAI character history endpoint returns this compact form:
+  // `{ chat_ids: [3050086571, 3050076328] }`.
+  if (Array.isArray(payload.chat_ids)) return payload.chat_ids.map((id) => ({ id }));
+  for (const key of ['chats', 'chat_history', 'conversations', 'items', 'data', 'results']) {
+    if (Array.isArray(payload[key])) return payload[key];
+  }
+  // Some versions wrap the actual array one level further inside `data`.
+  for (const key of ['chats', 'chat_history', 'conversations', 'data', 'results']) {
+    if (payload[key] && typeof payload[key] === 'object') {
+      const nested = chatListItems(payload[key]);
+      if (nested.length) return nested;
+    }
+  }
+  return [];
+}
+
+function chatSummaryCharacterId(chat) {
+  if (!chat || typeof chat !== 'object') return '';
+  return String(chat.character_id || chat.characterId || (chat.character && chat.character.id) || '');
+}
+
+function chatItemsFromPayload(payload) {
+  const listed = chatListItems(payload);
+  if (listed.length) return listed;
+  // A chat page sometimes returns a complete archive as `{ chat, character,
+  // chatMessages }` rather than a collection envelope.
+  if (payload && payload.chat && (payload.chat.id || payload.chat.chat_id)) return [payload.chat];
+  return [];
+}
+
+/**
+ * Let JanitorAI's own character page reveal its current internal request(s).
+ * This is a fallback for deployments that do not publish a stable chat-list
+ * endpoint. It only reads same-session responses from an otherwise untouched
+ * temporary page, and never creates, changes, or sends a chat.
+ */
+async function discoverCharacterChatsFromPage(page, characterId) {
+  const probe = await page.context().newPage();
+  const bodies = [];
+  probe.on('response', (response) => {
+    const url = response.url();
+    if (!/janitorai\.com\/hampter\//i.test(url) || !/(?:chats?|conversations)/i.test(url)) return;
+    bodies.push(response.text().then((body) => {
+      try { return JSON.parse(body); } catch (_) { return null; }
+    }).catch(() => null));
+  });
+  try {
+    await probe.goto(`https://janitorai.com/characters/${encodeURIComponent(characterId)}`, {
+      waitUntil: 'domcontentloaded', timeout: 30000,
+    }).catch(() => {});
+    await probe.waitForTimeout(3500);
+    const payloads = await Promise.all(bodies);
+    return {
+      observed: payloads.some((payload) => payload != null),
+      items: payloads.flatMap((payload) => chatItemsFromPayload(payload)),
+    };
+  } finally {
+    await probe.close().catch(() => {});
+  }
+}
+
+async function fetchCharacterChats(page, characterId) {
+  const wanted = String(characterId || '');
+  if (!wanted) throw new Error('character id is required');
+  const found = new Map();
+  let listWasAvailable = false;
+  let source = '';
+  const profile = await fetchMyProfile(page);
+  const userId = profile && (profile.id || profile.user_id);
+  const addItems = (items) => {
+    for (const chat of items) {
+      const id = chat && (chat.id || chat.chat_id);
+      if (id == null) continue;
+      const itemCharacterId = chatSummaryCharacterId(chat);
+      if (itemCharacterId && itemCharacterId !== wanted) continue;
+      found.set(String(id), chat);
+    }
+  };
+
+  // The collection route `/hampter/chats` no longer exists (it returns 404).
+  // Current deployments expose the list as a character subresource; older ones
+  // include it in the character response. Try both without surfacing a 404.
+  const character = await fetchCharacter(page, wanted).catch(() => null);
+  if (character && typeof character === 'object') {
+    // Do not treat a generic `data` array as chats here: on some character
+    // routes it is a similar-character catalog whose IDs are not chat IDs.
+    const embedded = character.chats || character.chat_history || character.conversations;
+    if (embedded) {
+      listWasAvailable = true;
+      source = 'character metadata';
+      addItems(chatListItems({ chats: embedded }));
+    }
+  }
+
+  // A page size of 100 keeps normal accounts to one request. Stop if a server
+  // ignores `page` (the IDs then stop changing) or returns its final page.
+  for (let pageNumber = 1; pageNumber <= 100; pageNumber += 1) {
+    const params = new URLSearchParams({ limit: '100', page: String(pageNumber) });
+    if (userId) params.set('user_id', String(userId));
+    const routes = [
+      `https://janitorai.com/hampter/characters/${encodeURIComponent(wanted)}/chats?${params}`,
+      `https://janitorai.com/hampter/characters/${encodeURIComponent(wanted)}/conversations?${params}`,
+    ];
+    let payload = null;
+    for (const url of routes) {
+      const result = await authedFetch(page, url);
+      if (result.status === 404) continue;
+      if (result.status >= 400) throw new Error(`list chats failed: HTTP ${result.status}`);
+      try { payload = JSON.parse(result.body); } catch (_) {
+        throw new Error('list chats: response was not JSON');
+      }
+      listWasAvailable = true;
+      source = new URL(url).pathname;
+      break;
+    }
+    // Not every JanitorAI deployment exposes an account-history endpoint.
+    // The character response may still have supplied chats above.
+    if (!payload) break;
+    const items = chatListItems(payload);
+    const before = found.size;
+    addItems(items);
+    const added = found.size - before;
+    const next = payload && (payload.next_page || payload.nextPage || payload.next);
+    if (!items.length || !added || (items.length < 100 && !next)) break;
+  }
+  if (!listWasAvailable) {
+    const discovered = await discoverCharacterChatsFromPage(page, wanted);
+    // The request observer itself is evidence that this site version exposes a
+    // chat list; a genuinely empty array is therefore a valid zero result.
+    listWasAvailable = discovered.observed;
+    if (discovered.observed) source = 'character page';
+    addItems(discovered.items);
+  }
+  if (!listWasAvailable) {
+    throw new Error('JanitorAI did not expose this account’s conversation list. Open the character in JanitorAI once, then try again.');
+  }
+  return { chats: [...found.values()], source };
+}
+
+/** Get the account profile only to resolve the name for {{user}} substitutions. */
+async function fetchMyProfile(page) {
+  const result = await authedFetch(page, 'https://janitorai.com/hampter/profiles/mine');
+  if (result.status >= 400) return null;
+  try { return JSON.parse(result.body); } catch (_) { return null; }
+}
+
 /**
  * Type `text` into the chat composer and send it.
  * @param {import('playwright').Page} page
@@ -312,5 +475,5 @@ async function checkLogin(page) {
 
 module.exports = {
   sendMessage, pickChatPage, parseCharacterId, createChat, deleteChat, fetchCharacter,
-  authedFetch, checkLogin, dismissModals,
+  fetchChat, fetchCharacterChats, chatListItems, fetchMyProfile, authedFetch, checkLogin, dismissModals,
 };

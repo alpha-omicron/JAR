@@ -3,6 +3,7 @@
 const $ = (id) => document.getElementById(id);
 const state = {
   selected: null, worldInfo: null, character: null, publicBooks: [], hasAdvanced: false,
+  janitorChecked: false,
 };
 
 // A character has an "advanced" (Nine API) lorebook when any attached script is of
@@ -332,7 +333,9 @@ async function selectCapture(id) {
   $('promptPreview').classList.add('hidden');
   $('promptPre').textContent = '';
   $('loreExtractStatus').textContent = '';
+  $('linkChatStatus').textContent = '';
   renderPublicBooks(rec.publicLorebooks || []);
+  renderConversations(rec);
 
   // auto-run separation only when there's a captured payload to separate.
   if (captured && state.hasAdvanced) {
@@ -722,6 +725,9 @@ function renderCardSource(source) {
   } else if (source === 'reconstructed') {
     el.textContent = t('cardSrcReconstructed');
     el.className = 'card-source src-reconstructed';
+  } else if (source === 'chat') {
+    el.textContent = t('cardSrcChat');
+    el.className = 'card-source src-janitor';
   } else {
     el.textContent = '';
     el.className = 'card-source hidden';
@@ -894,6 +900,210 @@ function download() {
   triggerDownload(blob, `${lorebookFileName()}.json`);
 }
 
+async function fetchConversationExport(chat) {
+  return api('/api/chat-export', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat }),
+  });
+}
+
+function downloadConversation(result, format) {
+  const name = safeName(`A Chat with ${result.characterName || 'Character'}`);
+  if (format === 'raw') {
+    triggerDownload(
+      new Blob([JSON.stringify(result.raw, null, 2)], { type: 'application/json' }),
+      `${name}.json`,
+    );
+  } else {
+    triggerDownload(
+      new Blob([result.jsonl], { type: 'application/x-ndjson;charset=utf-8' }),
+      `${name}.jsonl`,
+    );
+  }
+}
+
+// Fetch a single chat through the signed-in browser session and immediately
+// download either JanitorAI's untouched archive or its SillyTavern conversion.
+async function exportConversation(format) {
+  const chat = $('chatUrl').value.trim();
+  const status = $('chatExportStatus');
+  if (!chat) { status.textContent = t('chatUrlPh'); return; }
+  const rawBtn = $('exportChatJsonBtn');
+  const jsonlBtn = $('exportChatJsonlBtn');
+  rawBtn.disabled = true;
+  jsonlBtn.disabled = true;
+  status.innerHTML = `<span class="extracting">${escapeHtml(t('chatExporting'))}</span>`;
+  try {
+    const result = await fetchConversationExport(chat);
+    downloadConversation(result, format);
+    status.textContent = t('chatExportDone').replace('{n}', result.messageCount);
+    state.janitorReady = true;
+    state.janitorChecked = true;
+    refreshHeaderStatus();
+  } catch (e) {
+    setStatus(status, 'x', e.message);
+  } finally {
+    rawBtn.disabled = false;
+    jsonlBtn.disabled = false;
+  }
+}
+
+function conversationIconButton(icon, label) {
+  const button = document.createElement('button');
+  button.className = 'ghost small icon-only';
+  button.title = label;
+  button.setAttribute('aria-label', label);
+  button.innerHTML = `<svg class="icon"><use href="#${icon}"/></svg>`;
+  return button;
+}
+
+function renderConversations(rec) {
+  const container = $('conversationList');
+  const conversations = Array.isArray(rec && rec.conversations) ? rec.conversations : [];
+  container.innerHTML = '';
+  if (!conversations.length) {
+    const hint = document.createElement('p');
+    hint.className = 'hint';
+    hint.textContent = t('noConversations');
+    container.appendChild(hint);
+    return;
+  }
+  conversations.forEach((conversation) => {
+    const row = document.createElement('div');
+    row.className = 'conversation-row';
+    const meta = document.createElement('div');
+    meta.className = 'conversation-meta';
+    const id = document.createElement('input');
+    id.className = 'conversation-id';
+    id.type = 'text';
+    id.value = conversation.label || conversation.title || `Chat ${conversation.chatId}`;
+    id.placeholder = t('conversationTitlePh');
+    id.title = `Chat ${conversation.chatId}`;
+    id.addEventListener('change', async () => {
+      try {
+        await api('/api/conversation-label', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ recordId: state.selected, chatId: conversation.chatId, title: id.value }),
+        });
+      } catch (e) { setStatus($('linkChatStatus'), 'x', e.message); }
+    });
+    const details = document.createElement('div');
+    details.className = 'muted';
+    const lastUsed = conversation.updatedAt ? ` · ${new Date(conversation.updatedAt).toLocaleString()}` : '';
+    details.textContent = `${conversation.messageCount || 0} messages${lastUsed}`;
+    meta.append(id, details);
+    row.appendChild(meta);
+    const downloads = document.createElement('div');
+    downloads.className = 'conversation-download-menu';
+    const download = conversationIconButton('i-download', t('downloadConversation'));
+    const menu = document.createElement('div');
+    menu.className = 'conversation-download-choices hidden';
+    [['raw', 'downloadRaw'], ['jsonl', 'downloadJsonl']].forEach(([format, label]) => {
+      const button = document.createElement('button');
+      button.className = 'ghost small';
+      button.textContent = t(label);
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        try { downloadConversation(await fetchConversationExport(conversation.chatId), format); }
+        catch (e) { setStatus($('linkChatStatus'), 'x', e.message); }
+        finally { button.disabled = false; menu.classList.add('hidden'); }
+      });
+      menu.appendChild(button);
+    });
+    download.addEventListener('click', () => menu.classList.toggle('hidden'));
+    downloads.append(download, menu);
+    row.appendChild(downloads);
+    const manage = document.createElement('div');
+    manage.className = 'conversation-manage';
+    const open = conversationIconButton('i-external', t('openConversationBtn'));
+    open.addEventListener('click', () => {
+      window.open(conversation.url || `https://janitorai.com/chats/${conversation.chatId}`, '_blank', 'noopener');
+    });
+    manage.appendChild(open);
+    const refresh = conversationIconButton('i-refresh', t('refreshConversationBtn'));
+    refresh.addEventListener('click', async () => {
+      refresh.disabled = true;
+      $('linkChatStatus').textContent = t('conversationRefreshing');
+      try {
+        const result = await api('/api/conversation-refresh', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ recordId: state.selected, chatId: conversation.chatId }),
+        });
+        await selectCapture(result.id);
+      } catch (e) { setStatus($('linkChatStatus'), 'x', e.message); }
+      finally { refresh.disabled = false; }
+    });
+    manage.appendChild(refresh);
+    const remove = conversationIconButton('i-trash', t('removeConversationBtn'));
+    remove.addEventListener('click', async () => {
+      if (!confirm(`Remove Chat ${conversation.chatId} from this character?`)) return;
+      try {
+        const result = await api('/api/conversation-delete', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ recordId: state.selected, chatId: conversation.chatId }),
+        });
+        await selectCapture(result.id);
+      } catch (e) { setStatus($('linkChatStatus'), 'x', e.message); }
+    });
+    manage.appendChild(remove);
+    row.appendChild(manage);
+    container.appendChild(row);
+  });
+}
+
+async function importConversationCharacter(chat, recordId, status, labels = {}) {
+  const value = String(chat || '').trim();
+  if (!value) { status.textContent = t('chatUrlPh'); return; }
+  const busyLabel = labels.busy || 'chatImporting';
+  const doneLabel = labels.done || 'chatImportDone';
+  status.innerHTML = `<span class="extracting">${escapeHtml(t(busyLabel))}</span>`;
+  try {
+    const result = await api('/api/chat-import', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat: value, recordId }),
+    });
+    await loadList();
+    await selectCapture(result.id);
+    status.textContent = t(doneLabel);
+    state.janitorReady = true;
+    state.janitorChecked = true;
+    refreshHeaderStatus();
+  } catch (e) {
+    setStatus(status, 'x', e.message);
+  }
+}
+
+function importSidebarConversation() {
+  return importConversationCharacter($('chatUrl').value, null, $('chatExportStatus'));
+}
+
+function linkConversation() {
+  return importConversationCharacter($('linkedChatUrl').value, state.selected, $('linkChatStatus'), {
+    busy: 'chatLinking', done: 'chatLinkDone',
+  });
+}
+
+async function findCharacterConversations() {
+  const button = $('findConversationsBtn');
+  const status = $('linkChatStatus');
+  if (!state.selected) return;
+  button.disabled = true;
+  status.innerHTML = `<span class="extracting">${escapeHtml(t('findConversationsBusy'))}</span>`;
+  try {
+    const result = await api('/api/character-conversations', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ recordId: state.selected }),
+    });
+    await loadList();
+    await selectCapture(result.id);
+    status.textContent = `${t('findConversationsDone').replace('{n}', result.found)}${result.source ? ` (${result.source})` : ''}`;
+    state.janitorReady = true;
+    state.janitorChecked = true;
+    refreshHeaderStatus();
+  } catch (e) {
+    setStatus(status, 'x', e.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 // "extract" button → INSPECT only: read the character's name, avatar, card
 // visibility and lorebooks. Nothing public triggers a generateAlpha run; the
 // private card / closed lorebooks are extracted later, on demand.
@@ -949,6 +1159,11 @@ async function runFromUrl() {
     li.remove();
     await loadList();
     await selectCapture(r.id);
+    if (!saucepan) {
+      state.janitorReady = true;
+      state.janitorChecked = true;
+      refreshHeaderStatus();
+    }
     $('autoStatus').textContent = saucepan ? t('extractDone') : t('inspectDone');
   } catch (e) {
     li.remove();
@@ -1023,7 +1238,7 @@ function renderJanitorStatus() {
   const el = $('janitorStatus');
   if (!el) return;
   if (state.janitorReady) setStatus(el, 'check', t('loggedIn'));
-  else el.textContent = t('notLoggedIn');
+  else el.textContent = state.janitorChecked ? t('notLoggedIn') : t('sessionUnchecked');
 }
 
 function renderSaucepanStatus() {
@@ -1034,13 +1249,14 @@ function renderSaucepanStatus() {
 }
 
 // Header shows each source's session state separately (JanitorAI + Saucepan).
-function setHeaderChip(el, label, ready) {
+function setHeaderChip(el, label, ready, checked = true) {
   if (!el) return;
   if (ready) el.innerHTML = `${escapeHtml(label)}: ${iconSvg('check')} <span>${escapeHtml(t('loggedIn'))}</span>`;
+  else if (!checked) el.textContent = `${label}: ${t('sessionUnchecked')}`;
   else el.textContent = `${label}: ${t('notLoggedIn')}`;
 }
 function refreshHeaderStatus() {
-  setHeaderChip($('janitorHeaderStatus'), t('janitorTitle'), state.janitorReady);
+  setHeaderChip($('janitorHeaderStatus'), t('janitorTitle'), state.janitorReady, state.janitorChecked);
   setHeaderChip($('saucepanHeaderStatus'), t('saucepanTitle'), state.saucepanReady);
 }
 
@@ -1053,7 +1269,6 @@ function openLoginDialog() {
 // ---- settings ----
 async function openSettings() {
   const s = await api('/api/settings');
-  $('setLang').value = currentLang;
   $('setBaseUrl').value = s.baseUrl || '';
   $('setApiKey').value = s.apiKey || '';
   $('setModel').value = s.model || '';
@@ -1119,17 +1334,16 @@ function unlockUI() {
 }
 
 async function checkStatus() {
-  $('janitorHeaderStatus').textContent = t('checkingSession');
+  // Do not launch Chromium merely to populate the initial JanitorAI badge.
+  // Login and extraction validate the persisted session when the user asks to use it.
+  state.janitorReady = false;
+  state.janitorChecked = false;
+  $('janitorHeaderStatus').textContent = `${t('janitorTitle')}: ${t('sessionUnchecked')}`;
   $('saucepanHeaderStatus').textContent = '';
-  // Either source unlocks the UI: JanitorAI (browser session) or Saucepan (token).
-  const [jan, sauce] = await Promise.all([
-    api('/api/status').catch(() => ({ loggedIn: false })),
-    api('/api/saucepan/status').catch(() => ({ loggedIn: false })),
-  ]);
-  state.janitorReady = !!jan.loggedIn;
+  const sauce = await api('/api/saucepan/status').catch(() => ({ loggedIn: false }));
   state.saucepanReady = !!sauce.loggedIn;
   refreshHeaderStatus();
-  if (state.janitorReady || state.saucepanReady) unlockUI();
+  unlockUI();
 }
 
 // ---- JanitorAI login (browser session; runs from the login window) ----
@@ -1145,12 +1359,16 @@ async function login() {
   setStatus($('janitorStatus'), 'unlock', t('openingJanitor'));
   try {
     const data = await api('/api/login', { method: 'POST' });
+    state.janitorChecked = true;
     if (data.loggedIn) {
       state.janitorReady = true;
       renderJanitorStatus();
       refreshHeaderStatus();
       unlockUI();
     } else {
+      state.janitorReady = false;
+      renderJanitorStatus();
+      refreshHeaderStatus();
       setStatus($('janitorStatus'), 'x', t('notSignedIn'));
     }
   } catch (e) {
@@ -1167,6 +1385,7 @@ async function janitorLogout() {
     await api('/api/logout', { method: 'POST' });
   } catch (_) { /* clear locally regardless */ }
   state.janitorReady = false;
+  state.janitorChecked = true;
   renderJanitorStatus();
   refreshHeaderStatus();
   $('janitorLoginBtn').disabled = false;
@@ -1181,6 +1400,15 @@ function connectEvents() {
 // ---- wire up ----
 $('runBtn').addEventListener('click', runFromUrl);
 $('charUrl').addEventListener('keydown', (e) => { if (e.key === 'Enter') runFromUrl(); });
+$('exportChatJsonBtn').addEventListener('click', () => exportConversation('raw'));
+$('exportChatJsonlBtn').addEventListener('click', () => exportConversation('jsonl'));
+$('importChatBtn').addEventListener('click', importSidebarConversation);
+$('chatUrl').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') exportConversation('jsonl');
+});
+$('linkChatBtn').addEventListener('click', linkConversation);
+$('findConversationsBtn').addEventListener('click', findCharacterConversations);
+$('linkedChatUrl').addEventListener('keydown', (e) => { if (e.key === 'Enter') linkConversation(); });
 $('dlExtractedBtn').addEventListener('click', downloadExtracted);
 $('buildBtn').addEventListener('click', runBuild);
 $('previewBtn').addEventListener('click', previewPrompt);
@@ -1206,15 +1434,6 @@ $('settingsBtn').addEventListener('click', openSettings);
 $('saveSettings').addEventListener('click', saveSettings);
 $('saucepanLoginBtn').addEventListener('click', saucepanLogin);
 $('saucepanLogoutBtn').addEventListener('click', saucepanLogout);
-// Manual language switch — applies immediately and persists across sessions.
-$('setLang').addEventListener('change', () => {
-  setLang($('setLang').value, true);
-  // Re-render dynamic (JS-set) labels the generic data-i18n pass doesn't cover.
-  refreshHeaderStatus();
-  renderJanitorStatus();
-  renderSaucepanStatus();
-});
-
 $('loginBtn').addEventListener('click', openLoginDialog);
 $('janitorLoginBtn').addEventListener('click', onJanitorAuth);
 $('howBtn').addEventListener('click', () => { $('howDialog').showModal(); $('howDialog').scrollTop = 0; });

@@ -62,10 +62,73 @@ function saveInspection(record) {
     avatarBase64: record.avatarBase64 || '',
     character: record.character || null,
     cardPublic: !!record.cardPublic,
+    conversations: Array.isArray(record.conversations) ? record.conversations : [],
     payload: null,
   };
   fs.writeFileSync(fileFor(id), JSON.stringify(stored, null, 2), 'utf8');
   return stored;
+}
+
+/** Find the newest stored character record for a JanitorAI character id. */
+function findByCharacterId(characterId) {
+  const wanted = String(characterId || '');
+  if (!wanted) return null;
+  return list()
+    .filter((item) => item.characterId === wanted)
+    .map((item) => get(item.id))
+    .filter(Boolean)
+    .sort((a, b) => b.ts - a.ts)[0] || null;
+}
+
+/** Link a known JanitorAI conversation to a character inspection record. */
+function attachConversation(id, conversation) {
+  const rec = get(id);
+  if (!rec) return null;
+  const chatId = String(conversation && conversation.chatId || '');
+  if (!chatId) return rec;
+  const list = Array.isArray(rec.conversations) ? rec.conversations : [];
+  const next = { ...conversation, chatId };
+  const index = list.findIndex((item) => String(item && item.chatId) === chatId);
+  if (index >= 0) {
+    const existing = list[index];
+    // A bulk listing only carries IDs, while a user label is local-only. Never
+    // replace either an existing title with an empty summary or a saved label.
+    list[index] = {
+      ...existing,
+      ...next,
+      title: next.title || existing.title || '',
+      label: existing.label || '',
+    };
+  }
+  else list.unshift(next);
+  rec.conversations = list;
+  fs.writeFileSync(fileFor(id), JSON.stringify(rec, null, 2), 'utf8');
+  return rec;
+}
+
+/** Update user-facing metadata for one linked conversation. */
+function updateConversation(id, chatId, patch) {
+  const rec = get(id);
+  if (!rec) return null;
+  const wanted = String(chatId || '');
+  const conversations = Array.isArray(rec.conversations) ? rec.conversations : [];
+  const index = conversations.findIndex((item) => String(item && item.chatId) === wanted);
+  if (index < 0) return null;
+  conversations[index] = { ...conversations[index], ...patch, chatId: wanted };
+  rec.conversations = conversations;
+  fs.writeFileSync(fileFor(id), JSON.stringify(rec, null, 2), 'utf8');
+  return rec;
+}
+
+/** Unlink a conversation without touching the remote JanitorAI chat. */
+function removeConversation(id, chatId) {
+  const rec = get(id);
+  if (!rec) return null;
+  const wanted = String(chatId || '');
+  rec.conversations = (Array.isArray(rec.conversations) ? rec.conversations : [])
+    .filter((item) => String(item && item.chatId) !== wanted);
+  fs.writeFileSync(fileFor(id), JSON.stringify(rec, null, 2), 'utf8');
+  return rec;
 }
 
 /**
@@ -200,5 +263,6 @@ module.exports = {
   save, saveInspection, attachPayload, list, get, remove,
   attachCatalog, attachCharacter, attachCardData,
   attachPublicLorebooks, attachChatId, clearChatId,
+  findByCharacterId, attachConversation, updateConversation, removeConversation,
   systemContent, DIR,
 };

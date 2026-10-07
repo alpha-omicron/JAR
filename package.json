@@ -9,6 +9,7 @@
   "scripts": {
     "start": "node src/index.js",
     "test:separate": "node test/separate.test.js",
+    "test:chat-export": "node test/chatExport.test.js",
     "postinstall": "playwright install chromium"
   },
   "dependencies": {

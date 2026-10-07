@@ -1,5 +1,3 @@
-**English** · [Русский](README.ru.md)
-
 # Janitor AI Ripper
 
 JAR (Janitor AI Ripper) — extract lorebooks and characters from JanitorAI, both public and private, locally on your PC and automated.
@@ -62,7 +60,9 @@ The program does not collect or store your login credentials — it only reads t
 
 4. **Extract a closed lorebook** — click **extract** in the *lorebook* tab. Sends the selected context to trigger lorebook entries on Janitor servers. Then, those entries are intercepted. Click "build lorebook" and select context to send these entries to an LLM of choice to reconstruct a lorebook.
 
-5. **Download** — click **download .json** for a SillyTavern World Info file. Import via World Info → Import. Character cards download as PNG or JSON from the *character card* tab.
+5. **Import or export a conversation** — in the sidebar's **conversation export** section, paste a JanitorAI chat or message URL containing `/chats/<id>`. Click **create / link character** to create the associated character record (or add the chat to an existing record). Its **conversations** tab can also **find all account conversations** for that exact character, and exports any linked chat as raw `.json` or SillyTavern `.jsonl`. The JSONL keeps alternate Janitor replies as SillyTavern swipes.
+
+6. **Download extracted assets** — click **download .json** for a SillyTavern World Info file. Import via World Info → Import. Character cards download as PNG or JSON from the *character card* tab.
 
 ## How it works
 

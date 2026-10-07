@@ -53,6 +53,26 @@
         <line x1="18" y1="6" x2="6" y2="18"/>
         <line x1="6" y1="6" x2="18" y2="18"/>
       </symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24">
+        <polyline points="23 4 23 10 17 10"/>
+        <polyline points="1 20 1 14 7 14"/>
+        <path d="M3.5 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.65 4.36A9 9 0 0 0 20.5 15"/>
+      </symbol>
+      <symbol id="i-external" viewBox="0 0 24 24">
+        <path d="M14 3h7v7"/><path d="M10 14 21 3"/>
+        <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/>
+      </symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24">
+        <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/>
+        <path d="M10 11v6M14 11v6M9 6V4h6v2"/>
+      </symbol>
+      <symbol id="i-code" viewBox="0 0 24 24">
+        <polyline points="8 9 4 12 8 15"/><polyline points="16 9 20 12 16 15"/>
+      </symbol>
+      <symbol id="i-list" viewBox="0 0 24 24">
+        <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
+        <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+      </symbol>
     </defs>
   </svg>
 
@@ -80,6 +100,16 @@
             <button id="runBtn" class="primary small"><svg class="icon"><use href="#i-extract"/></svg><span data-i18n="runBtn">extract</span></button>
           </div>
           <span id="autoStatus" class="muted"></span>
+        </div>
+        <div class="auto-bar col conversation-export">
+          <label for="chatUrl" class="muted" data-i18n="chatExportTitle">conversation export</label>
+          <input id="chatUrl" type="text" data-i18n-ph="chatUrlPh" placeholder="Paste chat URL…" />
+          <div class="auto-row">
+            <button id="exportChatJsonBtn" class="ghost small"><svg class="icon"><use href="#i-download"/></svg><span data-i18n="chatExportRaw">raw .json</span></button>
+            <button id="exportChatJsonlBtn" class="primary small"><svg class="icon"><use href="#i-download"/></svg><span data-i18n="chatExportJsonl">SillyTavern .jsonl</span></button>
+          </div>
+          <button id="importChatBtn" class="ghost small"><svg class="icon"><use href="#i-extract"/></svg><span data-i18n="chatImportBtn">create / link character</span></button>
+          <span id="chatExportStatus" class="muted"></span>
         </div>
         <div class="sidebar-head">
           <h2 data-i18n="captures">captures</h2>
@@ -118,6 +148,7 @@
 
         <div class="tabs">
           <button class="tab active" data-tab="tabCard" data-i18n="tabCard">character card</button>
+          <button class="tab" data-tab="tabConversations" data-i18n="tabConversations">conversations</button>
           <button class="tab" data-tab="tabLorebook" data-i18n="tabLorebook">lorebook</button>
         </div>
 
@@ -164,6 +195,23 @@
                 <span id="charStatus" class="muted"></span>
               </div>
             </div>
+          </div>
+        </div>
+
+        <!-- Tab: linked conversations -->
+        <div id="tabConversations" class="tab-panel">
+          <div class="block">
+            <div class="conversation-heading">
+              <h3 data-i18n="conversationsTitle">linked conversations</h3>
+              <button id="findConversationsBtn" class="primary small"><svg class="icon"><use href="#i-refresh"/></svg><span data-i18n="findConversationsBtn">find all account conversations</span></button>
+            </div>
+            <p class="hint" data-i18n="conversationsHint">Paste a chat URL to link it to this character.</p>
+            <div class="row">
+              <input id="linkedChatUrl" type="text" data-i18n-ph="chatUrlPh" placeholder="Paste chat URL…" />
+              <button id="linkChatBtn" class="primary small" data-i18n="linkChatBtn">link conversation</button>
+            </div>
+            <span id="linkChatStatus" class="muted"></span>
+            <div id="conversationList" class="conversation-list"></div>
           </div>
         </div>
 
@@ -364,11 +412,6 @@
 
   <dialog id="settingsDialog">
     <form method="dialog">
-      <label data-i18n="lblLanguage">language</label>
-      <select id="setLang">
-        <option value="en">English</option>
-        <option value="ru">Русский</option>
-      </select>
       <h2 data-i18n="settingsTitle">extraction LLM (OpenAI-compatible)</h2>
       <label>Base URL</label>
       <input id="setBaseUrl" type="text" placeholder="https://openrouter.ai/api/v1" />
@@ -400,12 +443,10 @@
 
       <div id="howJanitor" class="how-tab-panel active">
         <div id="howEN" class="how-body"></div>
-        <div id="howRU" class="how-body hidden"></div>
       </div>
 
       <div id="howSaucepan" class="how-tab-panel">
         <div id="howSpEN" class="how-body"></div>
-        <div id="howSpRU" class="how-body hidden"></div>
       </div>
 
       <p class="muted" style="margin-top:16px;text-align:right">CGFY.</p>
