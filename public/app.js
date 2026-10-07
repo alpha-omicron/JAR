@@ -3,13 +3,13 @@
 const $ = (id) => document.getElementById(id);
 const state = {
   selected: null, worldInfo: null, character: null, publicBooks: [], hasAdvanced: false,
-  janitorChecked: false,
+  janitorChecked: false, bestEffortLorebookText: '',
 };
 
 // A character has an "advanced" (Nine API) lorebook when any attached script is of
-// type "advanced". Those inject entries the heuristic separator can't isolate, so
-// the whole closed-lorebook extraction must go through the LLM (see selectCapture /
-// buildExtractBody / runLoreExtract).
+// type "advanced". Their scripts can inject text in ways the deterministic
+// separator cannot fully understand, so the preview is explicitly best-effort
+// while the LLM build retains the complete triggered prompt as its source.
 function recHasAdvanced(rec) {
   const scripts = rec && rec.meta && rec.meta.scripts;
   return Array.isArray(scripts) && scripts.some((s) => s && s.type === 'advanced');
@@ -344,6 +344,7 @@ async function selectCapture(id) {
 
   // reset working areas
   $('lorebookText').value = '';
+  state.bestEffortLorebookText = '';
   $('lorebookEntries').innerHTML = '';
   $('worldInfoPre').textContent = '';
   $('buildStatus').textContent = '';
@@ -355,26 +356,36 @@ async function selectCapture(id) {
   renderPublicBooks(rec.publicLorebooks || []);
   renderConversations(rec);
 
-  // auto-run separation only when there's a captured payload to separate.
-  if (captured && state.hasAdvanced) {
-    // "advanced" lorebook: the heuristic separator is unreliable, so the LLM does
-    // the isolation. Feed it the full assembled system prompt (with the clean
-    // card/scenario carried as context). The textarea holds that raw source.
-    const sys = (msgs.find((m) => m && m.role === 'system') || {}).content || '';
-    $('lorebookText').value = sys;
-    renderExtractedContent('', t('advancedExtractedNotice'));
-    $('provBody').innerHTML = `<div class="prov-note">${iconSvg('code')} ${escapeHtml(t('advancedBreakdownNotice'))}</div>`;
-  } else if (captured) {
+  // Always run the deterministic separator for a readable raw preview. Advanced
+  // scripts receive a conspicuous best-effort warning, and their LLM build still
+  // uses the untouched full system prompt rather than this preview.
+  if (captured) {
     try {
       const r = await api('/api/separate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: state.selected, knownCard: '' }),
       });
-      $('lorebookText').value = r.lorebookText;
-      renderExtractedContent(r.lorebookText || '');
-      renderProvenance(rec, r);
-    } catch (_) { /* */ }
+      if (state.hasAdvanced) {
+        // Keep the full, unmodified source hidden in the textarea for /api/extract
+        // and /api/extract-preview. The visible/downloadable text is only the
+        // separator's best-effort approximation.
+        const sys = (msgs.find((m) => m && m.role === 'system') || {}).content || '';
+        $('lorebookText').value = sys;
+        state.bestEffortLorebookText = r.lorebookText || '';
+        renderExtractedContent(r.lorebookText || '', t('advancedExtractedEmpty'), 'advancedExtractedContent');
+        renderProvenance(rec, r, { bestEffort: true });
+      } else {
+        $('lorebookText').value = r.lorebookText;
+        renderExtractedContent(r.lorebookText || '');
+        renderProvenance(rec, r);
+      }
+    } catch (_) {
+      if (state.hasAdvanced) {
+        renderExtractedContent('', t('advancedExtractedEmpty'), 'advancedExtractedContent');
+        $('provBody').innerHTML = `<div class="prov-warn">${iconSvg('warn')} ${escapeHtml(t('advancedBreakdownUnavailable'))}</div>`;
+      }
+    }
   }
   updateLorebookEmpty();
 }
@@ -391,13 +402,11 @@ function updateLorebookEmpty() {
   const empty = !books.length && !hasEntries && !captured;
   $('noLorebook').classList.toggle('hidden', !empty);
 
-  // "advanced" (JS) lorebooks: explain that the content must be built via the LLM,
-  // and drop the heuristic "extracted content" preview + "download txt" path —
-  // there's nothing meaningful to show or download before the LLM build.
+  // Advanced/JS lorebooks retain the warning, but now expose an explicitly
+  // best-effort preview/download for users who do not have an LLM configured.
   const adv = state.hasAdvanced === true;
   $('advancedNotice').classList.toggle('hidden', !adv);
-  $('dlExtractedRow').classList.toggle('hidden', adv);
-  $('extractedDivider').classList.toggle('hidden', adv);
+  $('dlExtractedBtn').querySelector('span').textContent = t(adv ? 'dlBestEffortBtn' : 'dlExtractedBtn');
 
   // Prompt capture belongs to the character-card tab because it can also replace
   // the private definition. This tab only configures its lorebook trigger text.
@@ -423,7 +432,7 @@ const RM_KEY = {
   injectedExample: 'rmInjectedExample', injectedFirstMessage: 'rmInjectedFirstMessage',
 };
 
-async function renderProvenance(rec, sep) {
+async function renderProvenance(rec, sep, { bestEffort = false } = {}) {
   const removed = sep.removed || [];
   const entries = sep.entries || [];
 
@@ -436,6 +445,10 @@ async function renderProvenance(rec, sep) {
 
   const parts = [];
 
+  if (bestEffort) {
+    parts.push(`<div class="prov-warn">${iconSvg('warn')} ${escapeHtml(t('advancedBreakdownNotice'))}</div>`);
+  }
+
   if (entries.length) {
     parts.push('<details class="prov-item">'
       + `<summary>${t('provLorebookLbl')} <span class="muted">(${entries.length} ${t('provEntries')} · ${kept} ${t('provTokens')})</span></summary>`
@@ -443,7 +456,7 @@ async function renderProvenance(rec, sep) {
   }
 
   if (!removed.length && !entries.length) {
-    parts.push(`<div class="prov-warn">${iconSvg('warn')} ${t('provNothing')}</div>`);
+    parts.push(`<div class="prov-warn">${iconSvg('warn')} ${escapeHtml(t(bestEffort ? 'advancedBreakdownEmpty' : 'provNothing'))}</div>`);
   }
   removed.forEach((r, i) => {
     const label = t(RM_KEY[r.label] || r.label);
@@ -594,7 +607,7 @@ async function buildJsBook(i, btn) {
 // naive blank-line split into per-entry blocks was misleading: a single logical
 // entry usually spans several paragraphs, so it over-segmented. Without an LLM we
 // can't recover real entry boundaries or keys, so we present the raw text as-is.
-function renderExtractedContent(text, emptyNote = '') {
+function renderExtractedContent(text, emptyNote = '', titleKey = 'extractedContent') {
   const container = $('lorebookEntries');
   container.innerHTML = '';
   if (!text || !text.trim()) {
@@ -604,7 +617,7 @@ function renderExtractedContent(text, emptyNote = '') {
     details.open = true;
     const summary = document.createElement('summary');
     summary.className = 'msg-role';
-    summary.textContent = t('extractedContent');
+    summary.textContent = t(titleKey);
     const body = document.createElement('div');
     body.className = 'msg-body empty-extracted';
     body.textContent = emptyNote;
@@ -617,7 +630,7 @@ function renderExtractedContent(text, emptyNote = '') {
   details.open = true;
   const summary = document.createElement('summary');
   summary.className = 'msg-role';
-  summary.textContent = t('extractedContent');
+  summary.textContent = t(titleKey);
   const body = document.createElement('pre');
   body.className = 'msg-body';
   body.textContent = text.trim();
@@ -736,7 +749,7 @@ function lorebookFileName() {
 // no-LLM path: keys and real entry boundaries can't be recovered without a model,
 // so we just hand back the extracted content for manual use.
 function downloadExtracted() {
-  const text = $('lorebookText').value.trim();
+  const text = (state.hasAdvanced ? state.bestEffortLorebookText : $('lorebookText').value).trim();
   if (!text) return;
   const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
   triggerDownload(blob, `${lorebookFileName()}.txt`);
