@@ -1037,18 +1037,14 @@ app.post('/api/capture', async (req, res) => {
         console.log(`[capture] neutral probe stored with ${rec.id}`);
         store.attachCardData(fullCap.id, result.character);
 
-        // If closed lorebook content was extracted → the chat served its purpose,
-        // clean it up. Otherwise keep it so the user can retry with different
-        // messages (or the next auto-trigger variant).
-        if (result.lorebookText && result.lorebookText.trim()) {
-          try {
-            await deleteChat(page, chatId);
-            store.clearChatId(rec.id);
-          } catch (e) {
-            console.warn('[chat] delete failed (chat kept):', e.message);
-          }
-        } else {
-          console.log(`[chat] no closed content extracted, keeping chat ${chatId} for retry`);
+        // This chat exists only to obtain the assembled prompt. Its content has
+        // now been captured (even when no lore was triggered), so never leave an
+        // extraction attempt cluttering the user's JanitorAI conversation list.
+        try {
+          await deleteChat(page, chatId);
+          store.clearChatId(rec.id);
+        } catch (e) {
+          console.warn('[chat] temporary extraction chat could not be deleted:', e.message);
         }
 
         return result;
