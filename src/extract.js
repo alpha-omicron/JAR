@@ -115,6 +115,7 @@ function buildExtractionMessages(lorebookText, opts = {}) {
   const greetings = (opts.greetings || '').trim();
   const lorebookDescs = (opts.lorebookDescs || '').trim();
   const extra = (opts.extra || '').trim();
+  const knownPublicContents = (opts.knownPublicContents || '').trim();
   const userParts = [];
   if (card) {
     userParts.push(
@@ -157,6 +158,13 @@ function buildExtractionMessages(lorebookText, opts = {}) {
       'CONTEXT — additional notes provided by the user (names, aliases, setting '
       + 'details). Use it ONLY to infer better trigger keys. Do NOT output any of '
       + 'this as entries:\n\n' + extra,
+    );
+  }
+  if (knownPublicContents) {
+    userParts.push(
+      'KNOWN PUBLIC LOREBOOK CONTENT — this is already available separately. Exclude it '
+      + 'from the reconstructed private lorebook even if it appears in the raw prompt:\n\n'
+      + knownPublicContents,
     );
   }
   let source;

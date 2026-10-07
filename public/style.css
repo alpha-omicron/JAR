@@ -90,6 +90,7 @@ main { flex: 1; display: flex; min-height: 0; }
 .hint.warn { color: var(--accent); border-left: 2px solid var(--accent2);
   background: rgba(110, 168, 254, 0.08); padding: 8px 12px; border-radius: 4px;
   font-size: 13px; margin: 8px 0; }
+.script-build-error { color: var(--danger); border-left: 2px solid var(--danger); background: rgba(229, 100, 92, 0.12); }
 
 .extracting { animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
@@ -248,10 +249,19 @@ dialog h2 { margin-top: 0; font-size: 15px; }
 }
 .public-book .pb-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .public-book .pb-title { font-size: 13px; font-weight: 600; word-break: break-word; }
+.public-book .pb-title a { color: var(--accent); text-decoration: none; }
+.public-book .pb-title a:hover { text-decoration: underline; }
 .public-book .book-actions { display: flex; flex: none; align-items: center; gap: 8px; }
+.script-build-timer { white-space: nowrap; font-size: 12px; }
 .public-book .script-type { white-space: nowrap; font-weight: 400; }
 .public-book .script-type-advanced { color: #f2c77c; background: rgba(210, 148, 46, 0.18); }
 .public-book .script-type-lorebook { color: #cfe0ff; background: var(--tag); }
+.synthesis-script-rows { margin-top: 12px; }
+.synthesis-script-rows .public-book { align-items: flex-start; }
+.synthesis-script-rows .book-actions { flex-wrap: wrap; justify-content: flex-end; }
+.reconstructed-tag { color: #c9e9c9; background: rgba(76, 175, 80, .16); }
+.stale-tag { color: #f2c77c; background: rgba(210, 148, 46, .18); }
+.compact-context { margin-bottom: 12px; }
 
 /* raw messages: toggle to full unmodified JSON */
 .raw-toggle {

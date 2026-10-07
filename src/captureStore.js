@@ -141,6 +141,9 @@ function attachPayload(id, payload, source) {
   const rec = get(id);
   if (!rec) return null;
   rec.payload = payload;
+  // A new triggered prompt can contain different closed-lorebook content, so a
+  // prior private reconstruction is no longer an export of the current source.
+  delete rec.privateLorebookReconstruction;
   if (source) rec.source = source;
   rec.capturedAt = Date.now();
   fs.writeFileSync(fileFor(id), JSON.stringify(rec, null, 2), 'utf8');
@@ -169,13 +172,31 @@ function refreshInspection(id, patch) {
   rec.characterName = patch.characterName || rec.characterName;
   rec.meta = patch.meta || null;
   rec.context = patch.context || null;
-  rec.publicLorebooks = patch.publicLorebooks || [];
+  rec.publicLorebooks = mergePublicLorebooks(rec.publicLorebooks, patch.publicLorebooks || []);
   rec.avatarBase64 = patch.avatarBase64 || '';
   rec.cardPublic = !!patch.cardPublic;
   if (patch.character) rec.character = patch.character;
   rec.refreshedAt = Date.now();
   fs.writeFileSync(fileFor(id), JSON.stringify(rec, null, 2), 'utf8');
   return rec;
+}
+
+/** Preserve public-script reconstructions across refreshes, marking changed source stale. */
+function mergePublicLorebooks(previous, next) {
+  const prior = new Map((previous || []).map((book) => [String(book && book.id), book]));
+  return (next || []).map((book) => {
+    const old = prior.get(String(book && book.id));
+    if (!book || !book.isJs || !old || !old.reconstructedWorldInfo) return book;
+    const sameSource = old.reconstructedSourceHash && old.reconstructedSourceHash === book.scriptSourceHash;
+    return {
+      ...book,
+      reconstructedWorldInfo: old.reconstructedWorldInfo,
+      reconstructedSourceHash: old.reconstructedSourceHash,
+      reconstructedAt: old.reconstructedAt,
+      reconstructedModel: old.reconstructedModel,
+      reconstructionStale: !sameSource,
+    };
+  });
 }
 
 function systemContent(payload) {
@@ -264,9 +285,48 @@ function attachCardData(id, character) {
 function attachPublicLorebooks(id, publicLorebooks) {
   const rec = get(id);
   if (!rec) return false;
-  rec.publicLorebooks = publicLorebooks;
+  rec.publicLorebooks = mergePublicLorebooks(rec.publicLorebooks, publicLorebooks);
   fs.writeFileSync(fileFor(id), JSON.stringify(rec, null, 2), 'utf8');
   return true;
+}
+
+/** Atomically save a successful LLM reconstruction for one current public JS script. */
+function attachPublicScriptReconstruction(id, scriptId, reconstruction) {
+  const rec = get(id);
+  if (!rec) return null;
+  const wanted = String(scriptId);
+  const books = Array.isArray(rec.publicLorebooks) ? rec.publicLorebooks : [];
+  const index = books.findIndex((book) => book && String(book.id) === wanted && book.isJs);
+  if (index < 0) return null;
+  const book = books[index];
+  const currentHash = book.scriptSourceHash || reconstruction.sourceHash;
+  if (currentHash !== reconstruction.sourceHash) return null;
+  books[index] = {
+    ...book,
+    scriptSourceHash: currentHash,
+    reconstructedWorldInfo: reconstruction.worldInfo,
+    reconstructedSourceHash: reconstruction.sourceHash,
+    reconstructedAt: reconstruction.at || Date.now(),
+    reconstructedModel: reconstruction.model || '',
+    reconstructionStale: false,
+  };
+  rec.publicLorebooks = books;
+  fs.writeFileSync(fileFor(id), JSON.stringify(rec, null, 2), 'utf8');
+  return rec;
+}
+
+/** Atomically persist a successful private/closed-lorebook LLM reconstruction. */
+function attachPrivateLorebookReconstruction(id, reconstruction) {
+  const rec = get(id);
+  if (!rec) return null;
+  rec.privateLorebookReconstruction = {
+    worldInfo: reconstruction.worldInfo,
+    sourceHash: reconstruction.sourceHash,
+    reconstructedAt: reconstruction.at || Date.now(),
+    reconstructedModel: reconstruction.model || '',
+  };
+  fs.writeFileSync(fileFor(id), JSON.stringify(rec, null, 2), 'utf8');
+  return rec;
 }
 
 /**
@@ -293,7 +353,8 @@ function clearChatId(id) {
 module.exports = {
   save, saveInspection, attachPayload, list, get, remove,
   attachProbePayload, refreshInspection, attachCatalog, attachCharacter, attachCardData,
-  attachPublicLorebooks, attachChatId, clearChatId,
+  attachPublicLorebooks, attachPublicScriptReconstruction, attachPrivateLorebookReconstruction,
+  mergePublicLorebooks, attachChatId, clearChatId,
   findByCharacterId, attachConversation, updateConversation, removeConversation,
   systemContent, DIR,
 };

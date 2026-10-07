@@ -146,7 +146,7 @@
           <div id="provBody" class="prov-body"></div>
         </details>
 
-        <div class="tabs">
+        <div class="tabs main-tabs">
           <button class="tab active" data-tab="tabCard" data-i18n="tabCard">character card</button>
           <button class="tab" data-tab="tabConversations" data-i18n="tabConversations">conversations</button>
           <button class="tab" data-tab="tabLorebook" data-i18n="tabLorebook">lorebook</button>
@@ -295,6 +295,11 @@
             </details>
           </div>
 
+          <div id="synthesisTabs" class="tabs synthesis-tabs hidden">
+            <button id="privateSynthesisTab" class="tab active" data-i18n="privateSynthesisTab">private lorebook synthesis</button>
+            <button id="publicScriptSynthesisTab" class="tab" data-i18n="publicScriptSynthesisTab">public script synthesis</button>
+          </div>
+
           <div id="buildBlock" class="block hidden">
             <p id="buildPendingHint" class="hint" data-i18n="buildPendingHint">configure the LLM context now; capture the lorebook before building.</p>
             <div id="lorebookEntries" class="lorebook-entries"></div>
@@ -303,7 +308,7 @@
               <button id="dlExtractedBtn" class="ghost"><svg class="icon"><use href="#i-download"/></svg><span data-i18n="dlExtractedBtn">download extracted content as txt</span></button>
             </div>
             <div class="action-divider" id="extractedDivider"><span data-i18n="actionOr">OR</span></div>
-            <h3 data-i18n="buildTitle">build with LLM</h3>
+            <h3 data-i18n="privateSynthesisTitle">private lorebook synthesis</h3>
             <label class="muted" data-i18n="lblWorldName">world info name (optional)</label>
             <input id="worldName" type="text" placeholder="Janitor Lorebook" />
             <label class="muted" data-i18n="lblContext">context sent for key inference (never output as entries)</label>
@@ -366,6 +371,23 @@
               </div>
               <pre id="worldInfoPre" class="scroll"></pre>
             </div>
+          </div>
+
+          <div id="publicScriptBuildBlock" class="block hidden">
+            <h3 data-i18n="publicScriptSynthesisTitle">public script synthesis</h3>
+            <p class="hint" data-i18n="publicScriptSynthesisHint">Reconstruct public JavaScript lorebooks from their source. Results are LLM-reconstructed, not verbatim JanitorAI exports.</p>
+            <p id="publicScriptBuildStatus" class="hint script-build-error hidden"></p>
+            <label class="muted" data-i18n="publicScriptContextTitle">optional context for every public script build</label>
+            <div class="context-sources compact-context">
+              <div class="ctx-block"><div class="ctx-head"><label><input type="checkbox" id="publicUseCard" /> <span data-i18n="ctxCard">character card</span></label></div></div>
+              <div class="ctx-block"><div class="ctx-head"><label><input type="checkbox" id="publicUseCatalog" /> <span data-i18n="ctxCatalog">card description on site</span></label></div></div>
+              <div class="ctx-block"><div class="ctx-head"><label><input type="checkbox" id="publicUseScenario" /> <span data-i18n="ctxScenario">scenario</span></label></div></div>
+              <div class="ctx-block"><div class="ctx-head"><label><input type="checkbox" id="publicUseGreetings" /> <span data-i18n="ctxGreetings">first message(s)</span></label></div></div>
+            </div>
+            <details id="publicScriptPromptPreview" class="block hidden">
+              <summary data-i18n="promptPreviewTitle">prompt sent to the build LLM</summary>
+              <pre id="publicScriptPromptPre" class="scroll"></pre>
+            </details>
           </div>
         </div>
       </div>

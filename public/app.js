@@ -2,18 +2,10 @@
 
 const $ = (id) => document.getElementById(id);
 const state = {
-  selected: null, worldInfo: null, character: null, publicBooks: [], hasAdvanced: false,
-  janitorChecked: false, bestEffortLorebookText: '',
+  selected: null, worldInfo: null, character: null, publicBooks: [],
+  janitorChecked: false, bestEffortLorebookText: '', publicScripts: [],
+  hasPrivateSynthesis: false, hasAdvancedScripts: false, privateReconstruction: null, activeSynthesis: 'private',
 };
-
-// A character has an "advanced" (Nine API) lorebook when any attached script is of
-// type "advanced". Their scripts can inject text in ways the deterministic
-// separator cannot fully understand, so the preview is explicitly best-effort
-// while the LLM build retains the complete triggered prompt as its source.
-function recHasAdvanced(rec) {
-  const scripts = rec && rec.meta && rec.meta.scripts;
-  return Array.isArray(scripts) && scripts.some((s) => s && s.type === 'advanced');
-}
 
 async function api(path, opts) {
   const res = await fetch(path, opts);
@@ -243,8 +235,26 @@ function setStatus(el, iconName, text, cls) {
 
 // ---- tabs ----
 function switchTab(tabId) {
-  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === tabId));
+  // The synthesis controls use the same visual tab treatment but have their own
+  // active state. Only main navigation tabs belong to this switcher.
+  document.querySelectorAll('.main-tabs .tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === tabId));
   document.querySelectorAll('.tab-panel').forEach((p) => p.classList.toggle('active', p.id === tabId));
+}
+
+// A visible /scripts landing page is not proof that its lorebook source is
+// public. Keep old inspection records with `isCodePublic:false` on the closed
+// path too, so they work immediately without requiring a refresh/migration.
+function isClosedLorebook(book) {
+  return !!book && (book.isPublic === false || book.isCodePublic === false);
+}
+
+function scriptPageLink(book, title) {
+  // Page visibility is separate from source visibility: a code-private book can
+  // still have a readable JanitorAI landing page and description.
+  const canOpen = book && (book.isPagePublic === true || book.accessible || book.isPublic === true);
+  if (!canOpen || !book.id) return title;
+  const url = `https://janitorai.com/scripts/${encodeURIComponent(book.id)}`;
+  return `<a href="${url}" target="_blank" rel="noopener" title="${escapeHtml(t('openScriptPage'))}">${title}</a>`;
 }
 
 // ---- raw messages rendering ----
@@ -274,6 +284,7 @@ async function selectCapture(id) {
   const isNewSelection = state.selected !== id;
   state.selected = id;
   state.worldInfo = null;
+  state.privateReconstruction = null;
   document.querySelectorAll('#captureList li').forEach((li) =>
     li.classList.toggle('active', li.dataset.id === id));
 
@@ -310,7 +321,19 @@ async function selectCapture(id) {
   const captured = !!rec.payload;
   state.captured = captured;
   state.cardPublic = !!rec.cardPublic;
-  state.hasAdvanced = recHasAdvanced(rec);
+  state.privateReconstruction = rec.privateLorebookReconstruction || null;
+  const privateScripts = ((rec.meta && rec.meta.scripts) || [])
+    .filter((script) => script && script.is_public === false);
+  // Show the private build setup as soon as metadata confirms a closed book.
+  // It stays disabled until capture supplies its triggered prompt, but must not
+  // disappear merely because that capture has not happened yet.
+  state.hasPrivateSynthesis = privateScripts.length > 0
+    || (rec.publicLorebooks || []).some(isClosedLorebook);
+  // Advanced scripts can modify/inject prompt fields regardless of whether their
+  // source is public. Their deterministic prompt breakdown is therefore always
+  // best-effort; source visibility only affects the export UI.
+  state.hasAdvancedScripts = ((rec.meta && rec.meta.scripts) || [])
+    .some((script) => script && script.type === 'advanced');
 
   const msgs = (rec.payload && rec.payload.messages) || [];
   $('msgCount').textContent = msgs.length;
@@ -326,12 +349,12 @@ async function selectCapture(id) {
   // The card tab owns all refresh/re-extract actions. A catalog refresh is safe
   // for every record; a prompt capture is offered only when it can recover a
   // private definition or closed lorebook content.
-  const hasClosed = (rec.publicLorebooks || []).some((book) => book && !book.accessible && !book.isJs);
+  const hasClosed = (rec.publicLorebooks || []).some(isClosedLorebook);
   const canExtract = !captured && (!state.cardPublic || hasClosed);
   const canReextract = captured && (!state.cardPublic || hasClosed);
   $('cardExtractBtn').classList.toggle('hidden', !(canExtract || canReextract));
   const actionLabel = canReextract
-    ? (state.cardPublic ? 'btnReextractLorebooks' : 'btnReextractPrivate')
+    ? (state.cardPublic ? 'btnReextractLorebooks' : (hasClosed ? 'btnReextractPrivate' : 'btnReextractCard'))
     : (state.cardPublic ? 'btnExtractLorebooks' : (hasClosed ? 'btnExtractPrivateAndLorebooks' : 'btnExtractCard'));
   $('cardExtractBtn').querySelector('span').textContent = t(actionLabel);
   const actionHint = canReextract
@@ -353,6 +376,13 @@ async function selectCapture(id) {
   $('promptPreview').classList.add('hidden');
   $('promptPre').textContent = '';
   $('linkChatStatus').textContent = '';
+  if (state.privateReconstruction && state.privateReconstruction.worldInfo) {
+    state.worldInfo = state.privateReconstruction.worldInfo;
+    const count = Object.keys(state.worldInfo.entries || {}).length;
+    $('worldInfoPre').textContent = JSON.stringify(state.worldInfo, null, 2);
+    $('buildStatus').textContent = `${count} ${t('provEntries')}`;
+    $('buildResult').classList.remove('hidden');
+  }
   renderPublicBooks(rec.publicLorebooks || []);
   renderConversations(rec);
 
@@ -366,7 +396,7 @@ async function selectCapture(id) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: state.selected, knownCard: '' }),
       });
-      if (state.hasAdvanced) {
+      if (state.hasAdvancedScripts) {
         // Keep the full, unmodified source hidden in the textarea for /api/extract
         // and /api/extract-preview. The visible/downloadable text is only the
         // separator's best-effort approximation.
@@ -381,7 +411,7 @@ async function selectCapture(id) {
         renderProvenance(rec, r);
       }
     } catch (_) {
-      if (state.hasAdvanced) {
+      if (state.hasAdvancedScripts) {
         renderExtractedContent('', t('advancedExtractedEmpty'), 'advancedExtractedContent');
         $('provBody').innerHTML = `<div class="prov-warn">${iconSvg('warn')} ${escapeHtml(t('advancedBreakdownUnavailable'))}</div>`;
       }
@@ -395,7 +425,7 @@ async function selectCapture(id) {
 function updateLorebookEmpty() {
   const books = state.publicBooks || [];
   const openCount = books.filter((b) => b.accessible).length;
-  const closedCount = books.filter((b) => !b.accessible).length;
+  const closedCount = books.filter(isClosedLorebook).length;
   const hasEntries = $('lorebookEntries').children.length > 0;
   const captured = state.captured;
   const hasClosed = closedCount > 0;
@@ -404,16 +434,28 @@ function updateLorebookEmpty() {
 
   // Advanced/JS lorebooks retain the warning, but now expose an explicitly
   // best-effort preview/download for users who do not have an LLM configured.
-  const adv = state.hasAdvanced === true;
+  const adv = state.hasAdvancedScripts === true;
   $('advancedNotice').classList.toggle('hidden', !adv);
   $('dlExtractedBtn').querySelector('span').textContent = t(adv ? 'dlBestEffortBtn' : 'dlExtractedBtn');
 
   // Prompt capture belongs to the character-card tab because it can also replace
   // the private definition. This tab only configures its lorebook trigger text.
   $('loreExtractBlock').classList.toggle('hidden', !hasClosed);
-  // With only public lorebooks (and nothing extracted) there's nothing to build.
-  const onlyPublic = openCount > 0 && closedCount === 0 && !hasEntries;
-  $('buildBlock').classList.toggle('hidden', onlyPublic);
+  const hasPrivate = state.hasPrivateSynthesis;
+  const hasPublicScripts = state.publicScripts.length > 0;
+  const both = hasPrivate && hasPublicScripts;
+  $('synthesisTabs').classList.toggle('hidden', !both);
+  if (!hasPrivate && state.activeSynthesis === 'private') state.activeSynthesis = 'public';
+  if (!hasPublicScripts && state.activeSynthesis === 'public') state.activeSynthesis = 'private';
+  $('buildBlock').classList.toggle('hidden', !hasPrivate || (both && state.activeSynthesis !== 'private'));
+  // Script actions live in the normal public-lorebook list. When both
+  // reconstruction workflows exist, their shared configuration belongs only to
+  // the selected public-script synthesis mode.
+  $('publicScriptBuildBlock').classList.toggle(
+    'hidden', !hasPublicScripts || (both && state.activeSynthesis !== 'public'),
+  );
+  $('privateSynthesisTab').classList.toggle('active', state.activeSynthesis === 'private');
+  $('publicScriptSynthesisTab').classList.toggle('active', state.activeSynthesis === 'public');
   $('buildPendingHint').classList.toggle('hidden', captured);
   syncBuildActions();
 }
@@ -421,6 +463,7 @@ function updateLorebookEmpty() {
 function syncBuildActions() {
   $('buildBtn').disabled = !state.captured;
   $('previewBtn').disabled = !state.captured;
+  $('buildBtn').textContent = t(state.privateReconstruction ? 'regenerateBtn' : 'buildBtn');
 }
 
 // ---- extraction breakdown (what was pulled from which request, what was cut) ----
@@ -473,6 +516,7 @@ async function renderProvenance(rec, sep, { bestEffort = false } = {}) {
 // (a downloadable PUBLIC lorebook) or not (a CLOSED lorebook, rebuilt via the LLM).
 function renderPublicBooks(books) {
   state.publicBooks = Array.isArray(books) ? books : [];
+  state.publicScripts = state.publicBooks.filter((b) => b && (b.isJs || b.type === 'advanced') && !isClosedLorebook(b));
 
   const typeBadge = (b) => {
     const advanced = b && (b.isJs || b.type === 'advanced');
@@ -492,20 +536,21 @@ function renderPublicBooks(books) {
   const pubBlock = $('publicBlock');
   const pubContainer = $('publicBooks');
   pubContainer.innerHTML = '';
-  const open = state.publicBooks.filter((b) => b.accessible && !b.isJs);
-  const jsBooks = state.publicBooks.filter((b) => b.isJs);
-  if (!open.length && !jsBooks.length) {
+  const open = state.publicBooks.filter((b) => b.accessible && !b.isJs && !isClosedLorebook(b));
+  const scripts = state.publicScripts;
+  if (!open.length && !scripts.length) {
     pubBlock.classList.add('hidden');
   } else {
     pubBlock.classList.remove('hidden');
-    const closedCount = state.publicBooks.filter((b) => !b.accessible && !b.isJs).length;
-    $('publicHint').textContent = closedCount > 0 ? t('publicHint') : t('publicHintOnly');
+    const closedCount = state.publicBooks.filter(isClosedLorebook).length;
+    $('publicHint').textContent = scripts.length ? t('publicHintScripts')
+      : (closedCount > 0 ? t('publicHint') : t('publicHintOnly'));
     open.forEach((b) => {
       const i = state.publicBooks.indexOf(b);
       const row = document.createElement('div');
       row.className = 'public-book';
       const title = escapeHtml(b.title || t('publicUntitled'));
-      row.innerHTML = `<div class="pb-meta"><span class="pb-title">${iconSvg('book')} ${title}</span>`
+      row.innerHTML = `<div class="pb-meta"><span class="pb-title">${iconSvg('book')} ${scriptPageLink(b, title)}</span>`
         + `<span class="muted">${b.entryCount} ${t('provEntries')}</span>${descHtml(b)}</div>`;
       const actions = document.createElement('div');
       actions.className = 'book-actions';
@@ -518,21 +563,16 @@ function renderPublicBooks(books) {
       row.appendChild(actions);
       pubContainer.appendChild(row);
     });
-    jsBooks.forEach((b) => {
-      const i = state.publicBooks.indexOf(b);
+    scripts.forEach((b) => {
       const row = document.createElement('div');
       row.className = 'public-book';
       const title = escapeHtml(b.title || t('publicUntitled'));
-      row.innerHTML = `<div class="pb-meta"><span class="pb-title">${iconSvg('book')} ${title}</span>`
+      row.innerHTML = `<div class="pb-meta"><span class="pb-title">${iconSvg('book')} ${scriptPageLink(b, title)}</span>`
         + `${descHtml(b)}</div>`;
       const actions = document.createElement('div');
       actions.className = 'book-actions';
       actions.innerHTML = typeBadge(b);
-      const btn = document.createElement('button');
-      btn.className = 'ghost small';
-      btn.innerHTML = `${iconSvg('download')} Build .json`;
-      btn.addEventListener('click', () => buildJsBook(i, btn));
-      actions.appendChild(btn);
+      appendPublicScriptActions(actions, b);
       row.appendChild(actions);
       pubContainer.appendChild(row);
     });
@@ -542,7 +582,7 @@ function renderPublicBooks(books) {
   const privBlock = $('privateBlock');
   const privContainer = $('privateBooks');
   privContainer.innerHTML = '';
-  const closed = state.publicBooks.filter((b) => !b.accessible && !b.isJs);
+  const closed = state.publicBooks.filter(isClosedLorebook);
   if (!closed.length) {
     privBlock.classList.add('hidden');
   } else {
@@ -552,7 +592,7 @@ function renderPublicBooks(books) {
       const row = document.createElement('div');
       row.className = 'public-book';
       const title = escapeHtml(b.title || t('publicUntitled'));
-      row.innerHTML = `<div class="pb-meta"><span class="pb-title">${iconSvg('lock')} ${title}</span>`
+      row.innerHTML = `<div class="pb-meta"><span class="pb-title">${iconSvg('lock')} ${scriptPageLink(b, title)}</span>`
         + `<span class="muted">${t('private')}</span>${descHtml(b)}</div>`;
       const actions = document.createElement('div');
       actions.className = 'book-actions';
@@ -563,6 +603,64 @@ function renderPublicBooks(books) {
   }
 }
 
+function currentPublicScript(book) {
+  return !!(book && book.reconstructedWorldInfo && !book.reconstructionStale
+    && book.reconstructedSourceHash === book.scriptSourceHash);
+}
+
+function publicScriptBuildBody(book) {
+  return {
+    id: state.selected, scriptId: book.id,
+    useCard: $('publicUseCard').checked,
+    useCatalog: $('publicUseCatalog').checked,
+    useScenario: $('publicUseScenario').checked,
+    useGreetings: $('publicUseGreetings').checked,
+    useLorebookDescs: false,
+    extraContext: '',
+  };
+}
+
+function activatePublicScriptSynthesis() {
+  if (!state.publicScripts.length) return;
+  state.activeSynthesis = 'public';
+  updateLorebookEmpty();
+  $('publicScriptBuildBlock').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function setPublicScriptBuildError(error) {
+  const status = $('publicScriptBuildStatus');
+  status.textContent = error && error.message ? error.message : String(error || t('buildFailed'));
+  status.classList.remove('hidden');
+}
+
+function appendPublicScriptActions(actions, book) {
+  const cached = currentPublicScript(book);
+  const stale = !!book.reconstructedWorldInfo && !cached;
+  if (cached) actions.insertAdjacentHTML('beforeend', `<span class="tag reconstructed-tag">${escapeHtml(t('scriptReconstructed'))}</span>`);
+  if (stale) actions.insertAdjacentHTML('beforeend', `<span class="tag stale-tag">${escapeHtml(t('scriptStale'))}</span>`);
+  if (!book.scriptSource) {
+    actions.insertAdjacentHTML('beforeend', `<span class="muted">${escapeHtml(t('scriptUnavailable'))}</span>`);
+    return;
+  }
+  const preview = document.createElement('button');
+  preview.className = 'ghost small'; preview.textContent = t('scriptPreview');
+  preview.addEventListener('click', () => previewPublicScript(book));
+  actions.appendChild(preview);
+  if (cached || stale) {
+    const download = document.createElement('button');
+    download.className = 'ghost small'; download.innerHTML = `${iconSvg('download')} .json`;
+    download.addEventListener('click', () => downloadScriptReconstruction(book));
+    actions.appendChild(download);
+  }
+  const build = document.createElement('button');
+  build.className = 'ghost small'; build.textContent = t(cached || stale ? 'scriptRebuild' : 'scriptBuild');
+  const timer = document.createElement('span');
+  timer.className = 'muted script-build-timer';
+  build.addEventListener('click', () => buildPublicScript(book, build, timer));
+  actions.appendChild(build);
+  actions.appendChild(timer);
+}
+
 function downloadPublicBook(i) {
   const b = state.publicBooks[i];
   if (!b || !b.worldInfo) return;
@@ -570,12 +668,40 @@ function downloadPublicBook(i) {
   triggerDownload(blob, `${safeName(b.title || 'Public Lorebook')}.json`);
 }
 
-// Rebuild a public "advanced" JS lorebook into a SillyTavern World Info via the
-// build LLM (fromJs), then download the resulting .json. Reuses the same
-// /api/extract pipeline and per-source context as the closed-lorebook build.
-async function buildJsBook(i, btn) {
-  const b = state.publicBooks[i];
-  if (!b || !b.scriptSource) return;
+async function previewPublicScript(book) {
+  try {
+    activatePublicScriptSynthesis();
+    $('publicScriptBuildStatus').classList.add('hidden');
+    const body = { ...publicScriptBuildBody(book), lorebookText: book.scriptSource, fromJs: true };
+    const r = await api('/api/extract-preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    $('publicScriptPromptPre').textContent = (r.messages || []).map((m) => `### ${String(m.role || '').toUpperCase()}\n${m.content || ''}`).join('\n\n');
+    $('publicScriptPromptPreview').classList.remove('hidden');
+    $('publicScriptPromptPreview').open = true;
+    $('publicScriptPromptPreview').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (e) {
+    setPublicScriptBuildError(e);
+    console.error('[previewPublicScript]', e);
+  }
+}
+
+function startScriptBuildTimer(timer) {
+  const startedAt = Date.now();
+  timer.textContent = '0s';
+  const handle = setInterval(() => {
+    const seconds = Math.round((Date.now() - startedAt) / 1000);
+    timer.textContent = seconds >= 60 ? `${seconds}s · ${t('buildStillRunning')}` : `${seconds}s`;
+  }, 1000);
+  return () => {
+    clearInterval(handle);
+    const seconds = Math.round((Date.now() - startedAt) / 1000);
+    timer.textContent = `${seconds}s`;
+  };
+}
+
+async function buildPublicScript(book, btn, timer) {
+  if (!book || !book.scriptSource) return;
+  activatePublicScriptSynthesis();
+  $('publicScriptBuildStatus').classList.add('hidden');
   const cfg = await api('/api/settings').catch(() => null);
   if (!cfg || !cfg.baseUrl || !cfg.model) {
     openSettings();
@@ -584,23 +710,30 @@ async function buildJsBook(i, btn) {
   const orig = btn.innerHTML;
   btn.disabled = true;
   btn.textContent = t('building');
+  const stopTimer = startScriptBuildTimer(timer);
   try {
-    const body = { ...buildExtractBody(), lorebookText: b.scriptSource, fromJs: true };
-    const r = await api('/api/extract', {
+    const r = await api('/api/public-script-build', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify(publicScriptBuildBody(book)),
     });
-    const blob = new Blob([JSON.stringify(r.worldInfo, null, 2)], { type: 'application/json' });
-    triggerDownload(blob, `${safeName(b.title || 'Lorebook')}.json`);
-    btn.innerHTML = orig;
+    stopTimer();
+    await selectCapture(r.id);
   } catch (e) {
+    stopTimer();
     btn.textContent = t('buildFailed');
-    console.error('[buildJsBook]', e);
+    setPublicScriptBuildError(e);
+    console.error('[buildPublicScript]', e);
     setTimeout(() => { btn.innerHTML = orig; }, 2500);
   } finally {
     btn.disabled = false;
   }
+}
+
+function downloadScriptReconstruction(book) {
+  const info = book && book.reconstructedWorldInfo;
+  if (!info) return;
+  triggerDownload(new Blob([JSON.stringify(info, null, 2)], { type: 'application/json' }), `${safeName(book.title || 'Lorebook')}.json`);
 }
 
 // Show the isolated lorebook text as a single "Extracted content" block. The
@@ -653,7 +786,7 @@ function buildExtractBody() {
     extraContext: $('useExtra').checked ? $('extraContext').value : '',
     // "advanced" lorebooks: lorebookText is the full system prompt; let the LLM
     // isolate the lore from it (instead of building from pre-separated text).
-    fromRaw: state.hasAdvanced === true,
+    fromRaw: state.hasAdvancedScripts === true,
   };
 }
 
@@ -704,6 +837,15 @@ async function previewPrompt() {
 
 async function runBuild() {
   if (!state.selected || !state.captured) return;
+  const unbuiltScripts = state.publicScripts.filter((book) => !currentPublicScript(book));
+  if (unbuiltScripts.length) {
+    const warning = t('privateUnbuiltScripts').replace('{n}', unbuiltScripts.length);
+    if (!confirm(warning)) {
+      state.activeSynthesis = 'public';
+      updateLorebookEmpty();
+      return;
+    }
+  }
   // The lorebook build needs an OpenAI-compatible LLM. If it isn't configured,
   // don't fail with a cryptic server error — poke the user into settings.
   const cfg = await api('/api/settings').catch(() => null);
@@ -723,6 +865,7 @@ async function runBuild() {
       body: JSON.stringify(buildExtractBody()),
     });
     state.worldInfo = r.worldInfo;
+    state.privateReconstruction = r.privateLorebookReconstruction || { worldInfo: r.worldInfo };
     const count = Object.keys(r.worldInfo.entries).length;
     $('worldInfoPre').textContent = JSON.stringify(r.worldInfo, null, 2);
     $('buildStatus').textContent = `${count} ${t('provEntries')}`;
@@ -749,7 +892,7 @@ function lorebookFileName() {
 // no-LLM path: keys and real entry boundaries can't be recovered without a model,
 // so we just hand back the extracted content for manual use.
 function downloadExtracted() {
-  const text = (state.hasAdvanced ? state.bestEffortLorebookText : $('lorebookText').value).trim();
+  const text = (state.hasAdvancedScripts ? state.bestEffortLorebookText : $('lorebookText').value).trim();
   if (!text) return;
   const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
   triggerDownload(blob, `${lorebookFileName()}.txt`);
@@ -1502,8 +1645,17 @@ $('dlImgBtn').addEventListener('click', downloadImage);
 
 // Main detail tabs (character card / lorebook) — scoped so the how-dialog tabs
 // below don't get caught by the same handler.
-document.querySelectorAll('.tabs:not(.how-tabs) .tab').forEach((t) => {
+document.querySelectorAll('.tabs:not(.how-tabs):not(.synthesis-tabs) .tab').forEach((t) => {
   t.addEventListener('click', () => switchTab(t.dataset.tab));
+});
+
+$('privateSynthesisTab').addEventListener('click', () => {
+  state.activeSynthesis = 'private';
+  updateLorebookEmpty();
+});
+$('publicScriptSynthesisTab').addEventListener('click', () => {
+  state.activeSynthesis = 'public';
+  updateLorebookEmpty();
 });
 
 // "How it works" dialog tabs (JanitorAI / Saucepan).

@@ -21,7 +21,7 @@ const {
 const {
   sendMessage, parseCharacterId, createChat, deleteChat, freshGreetingMessageIds, fetchCharacter, fetchChat, fetchCharacterChats, fetchMyProfile, authedFetch,
 } = require('./autotrigger');
-const { fetchPublicLorebooks, publicEntryContents } = require('./publiclore');
+const { fetchPublicLorebooks, publicEntryContents, contentHash, scriptSourceHash } = require('./publiclore');
 const { enterExtractionMode, restoreProfile } = require('./profile');
 const { ensureUserMacroPersona, deletePersona } = require('./personas');
 const { allowsProxy, proxyForbiddenError } = require('./proxyPermission');
@@ -300,6 +300,9 @@ function resolveExtractInputs(req) {
     // "advanced" lorebook path), select the isolate-then-build prompt.
     fromRaw,
   };
+  if (fromRaw && rec) {
+    opts.knownPublicContents = publicEntryContents(rec.publicLorebooks).join('\n\n');
+  }
   return { lorebookText, opts };
 }
 
@@ -344,7 +347,14 @@ app.post('/api/extract', async (req, res) => {
     const { lorebookText, opts } = resolveExtractInputs(req);
     const cfg = loadSettings();
     const result = await extract(lorebookText, cfg, opts);
-    res.json(result);
+    const updated = req.body.id
+      ? store.attachPrivateLorebookReconstruction(req.body.id, {
+        worldInfo: result.worldInfo,
+        sourceHash: contentHash(lorebookText),
+        model: cfg.model,
+      })
+      : null;
+    res.json({ ...result, privateLorebookReconstruction: updated && updated.privateLorebookReconstruction });
   } catch (e) {
     res.status(e.status || 500).json({ error: String(e.message || e) });
   }
@@ -356,6 +366,31 @@ app.post('/api/extract-preview', (req, res) => {
   try {
     const { lorebookText, opts } = resolveExtractInputs(req);
     res.json({ messages: buildExtractionMessages(lorebookText, opts) });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: String(e.message || e) });
+  }
+});
+
+// Reconstruct and persist one readable public JS script. This is intentionally
+// opt-in; it never chains an automatic script build into private synthesis.
+app.post('/api/public-script-build', async (req, res) => {
+  try {
+    const rec = store.get(req.body && req.body.id);
+    const scriptId = String(req.body && req.body.scriptId || '');
+    if (!rec || !scriptId) return res.status(404).json({ error: 'public script not found' });
+    const book = (rec.publicLorebooks || []).find((item) => item && String(item.id) === scriptId && item.isJs);
+    if (!book || !book.scriptSource) {
+      return res.status(404).json({ error: 'public script source is unavailable' });
+    }
+    const cfg = loadSettings();
+    const opts = { ...buildLlmContext(rec, req.body, rec.context || {}), fromJs: true };
+    const result = await extract(book.scriptSource, cfg, opts);
+    const updated = store.attachPublicScriptReconstruction(rec.id, scriptId, {
+      worldInfo: result.worldInfo, sourceHash: book.scriptSourceHash || scriptSourceHash(book.scriptSource), model: cfg.model,
+    });
+    if (!updated) return res.status(409).json({ error: 'script source changed; refresh and try again' });
+    broadcast('capture', { id: updated.id });
+    res.json({ id: updated.id, scriptId, worldInfo: result.worldInfo, messages: result.messages });
   } catch (e) {
     res.status(e.status || 500).json({ error: String(e.message || e) });
   }
@@ -685,9 +720,15 @@ function refreshedCharacter(rec, out) {
 // follow-up /api/capture, triggered explicitly by the user.
 app.post('/api/inspect', async (req, res) => {
   try {
-    const characterId = parseCharacterId(req.body.url);
-    const charUrl = /^https?:\/\//i.test(req.body.url)
-      ? req.body.url
+    const inputUrl = String(req.body && req.body.url || '').trim();
+    // A lorebook page has its own UUID, but no character relationship/context.
+    // Treating it as a character UUID used to create a misleading blank record.
+    if (/^https?:\/\/(?:www\.)?janitorai\.com\/scripts\//i.test(inputUrl)) {
+      return res.status(400).json({ error: 'Paste the character URL, not a lorebook /scripts/ URL.' });
+    }
+    const characterId = parseCharacterId(inputUrl);
+    const charUrl = /^https?:\/\//i.test(inputUrl)
+      ? inputUrl
       : `https://janitorai.com/characters/${characterId}`;
     const out = await inspectCharacter(charUrl, characterId);
 

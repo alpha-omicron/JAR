@@ -26,8 +26,17 @@
 
 const { authedFetch } = require('./autotrigger');
 const { buildWorldInfo } = require('./worldinfo');
+const crypto = require('crypto');
 
 const ORIGIN = 'https://janitorai.com';
+
+function contentHash(source) {
+  return crypto.createHash('sha256').update(String(source || ''), 'utf8').digest('hex');
+}
+
+function scriptSourceHash(source) {
+  return contentHash(source);
+}
 
 /** Lorebook script references ({id,title,isPublic}) attached to a character. */
 function lorebookScriptRefs(meta) {
@@ -40,6 +49,22 @@ function lorebookScriptRefs(meta) {
       type: s.type,
       isPublic: s.is_public !== false,
     }));
+}
+
+/**
+ * A published lorebook page and a downloadable lorebook source have distinct
+ * visibility settings on JanitorAI. A page can be visible (so its description
+ * is readable) while its source explicitly says "code is private". Only source
+ * visibility makes a book public from JAR's export perspective.
+ *
+ * Older API responses did not include `is_code_public`; preserve the former
+ * page-visibility behavior only for those responses.
+ */
+function hasPublicSource(rec, ref = {}) {
+  if (!rec) return false;
+  const pagePublic = rec.is_public === true || ref.isPublic !== false;
+  if (typeof rec.is_code_public === 'boolean') return pagePublic && rec.is_code_public;
+  return pagePublic;
 }
 
 /**
@@ -129,20 +154,28 @@ function parseScriptEntries(rec) {
  */
 async function fetchPublicLorebook(page, scriptId, ref = {}) {
   const base = {
-    id: String(scriptId), title: ref.title || '', type: ref.type || 'lorebook', accessible: false,
+    id: String(scriptId), title: ref.title || '', type: ref.type || 'lorebook',
+    // Until a source response confirms otherwise, treat an unavailable source
+    // as closed so it remains eligible for prompt capture rather than vanishing.
+    isPublic: false, isPagePublic: ref.isPublic !== false, accessible: false,
   };
   let res;
   try {
     res = await authedFetch(page, `${ORIGIN}/hampter/script/${scriptId}`);
   } catch (e) {
-    return { ...base, error: String(e.message || e) };
+    // The source endpoint can be blocked while the public landing page (and its
+    // description) is still readable.
+    const description = await fetchScriptDescription(page, scriptId);
+    return { ...base, description, error: String(e.message || e) };
   }
   if (!res || res.status >= 400) {
-    return { ...base, status: res ? res.status : 0 };
+    const description = await fetchScriptDescription(page, scriptId);
+    return { ...base, description, status: res ? res.status : 0 };
   }
   let rec;
   try { rec = JSON.parse(res.body); } catch (_) {
-    return { ...base, error: 'response was not JSON' };
+    const description = await fetchScriptDescription(page, scriptId);
+    return { ...base, description, error: 'response was not JSON' };
   }
   const entries = parseScriptEntries(rec);
   const worldInfo = buildWorldInfo(entries);
@@ -156,21 +189,27 @@ async function fetchPublicLorebook(page, scriptId, ref = {}) {
   // the /hampter record (whose `description` is usually empty). A closed page
   // falls back to the (often empty) hampter description.
   const pageDesc = await fetchScriptDescription(page, scriptId);
+  const sourcePublic = hasPublicSource(rec, ref);
   const common = {
     id: String(rec.id || scriptId),
     title: rec.title || ref.title || '',
     type: ref.type || 'lorebook',
     description: pageDesc || rec.description || '',
-    isPublic: rec.is_public === true,
+    // This is source/export visibility, not visibility of the /scripts page.
+    isPublic: sourcePublic,
+    isPagePublic: rec.is_public === true || ref.isPublic !== false,
     isCodePublic: rec.is_code_public === true,
   };
   if (scriptSource) {
-    return { ...common, isJs: true, scriptSource, accessible: false, entryCount: 0, worldInfo };
+    return {
+      ...common, isJs: true, scriptSource, scriptSourceHash: scriptSourceHash(scriptSource),
+      accessible: false, entryCount: 0, worldInfo,
+    };
   }
   return {
     ...common,
     // Downloadable only if the code is public AND it actually yielded entries.
-    accessible: entryCount > 0,
+    accessible: sourcePublic && entryCount > 0,
     entryCount,
     worldInfo,
   };
@@ -200,8 +239,16 @@ async function fetchPublicLorebooks(page, meta) {
 function publicEntryContents(publicLorebooks) {
   const out = [];
   for (const b of publicLorebooks || []) {
-    if (!b || !b.accessible || !b.worldInfo || !b.worldInfo.entries) continue;
-    for (const e of Object.values(b.worldInfo.entries)) {
+    if (!b) continue;
+    // Also protect records created before source visibility was separated from
+    // page visibility: a known private code flag always wins.
+    if (b.isCodePublic === false) continue;
+    const reconstructedCurrent = b.isJs && !b.reconstructionStale
+      && b.reconstructedWorldInfo && b.reconstructedSourceHash === b.scriptSourceHash;
+    const worldInfo = b.accessible ? b.worldInfo
+      : (reconstructedCurrent ? b.reconstructedWorldInfo : null);
+    if (!worldInfo || !worldInfo.entries) continue;
+    for (const e of Object.values(worldInfo.entries)) {
       if (e && typeof e.content === 'string' && e.content.trim()) out.push(e.content);
     }
   }
@@ -210,7 +257,10 @@ function publicEntryContents(publicLorebooks) {
 
 module.exports = {
   lorebookScriptRefs,
+  hasPublicSource,
   jsScriptSource,
+  contentHash,
+  scriptSourceHash,
   parseScriptEntries,
   fetchPublicLorebook,
   fetchPublicLorebooks,
