@@ -62,12 +62,42 @@ async function loadList() {
     const li = document.createElement('li');
     if (state.selected === it.id) li.classList.add('active');
     li.dataset.id = it.id;
+    li.draggable = true;
+    li.title = 'Drag to reorder';
+    const name = it.characterName || '(unknown)';
     li.innerHTML = `
-      <div class="li-top">
-        <span class="li-char">${escapeHtml(it.characterName || '(unknown)')}</span>
-        <span class="li-time">${fmtTime(it.ts)}</span>
+      <div class="capture-avatar">
+        <img src="/api/captures/${encodeURIComponent(it.id)}/avatar" alt="" />
+        <span aria-hidden="true">${escapeHtml(name.slice(0, 1).toUpperCase())}</span>
       </div>
-      <div class="li-preview">${escapeHtml(it.preview || '')}</div>`;
+      <div class="li-content">
+        <div class="li-top">
+          <span class="li-char">${escapeHtml(name)}</span>
+          <span class="li-time">${fmtTime(it.ts)}</span>
+        </div>
+        <div class="li-preview">${escapeHtml(it.preview || '')}</div>
+      </div>`;
+    const avatar = li.querySelector('.capture-avatar img');
+    avatar.addEventListener('error', () => avatar.remove());
+    li.addEventListener('dragstart', (event) => {
+      li.classList.add('dragging');
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', it.id);
+    });
+    li.addEventListener('dragover', (event) => {
+      event.preventDefault();
+      const dragged = ul.querySelector('.dragging');
+      if (!dragged || dragged === li) return;
+      const rect = li.getBoundingClientRect();
+      ul.insertBefore(dragged, event.clientY > rect.top + rect.height / 2 ? li.nextSibling : li);
+    });
+    li.addEventListener('dragend', async () => {
+      li.classList.remove('dragging');
+      const ids = [...ul.querySelectorAll('li[data-id]')].map((row) => row.dataset.id);
+      try { await api('/api/captures/order', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }),
+      }); } catch (e) { console.warn('could not save capture order:', e); loadList(); }
+    });
     li.addEventListener('click', () => selectCapture(it.id));
     ul.appendChild(li);
   }

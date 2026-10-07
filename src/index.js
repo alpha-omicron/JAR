@@ -235,6 +235,23 @@ app.post('/api/tokens', (req, res) => {
 
 app.get('/api/captures', (req, res) => res.json(store.list()));
 
+app.post('/api/captures/order', (req, res) => {
+  const ids = req.body && req.body.ids;
+  if (!Array.isArray(ids) || !ids.every((id) => typeof id === 'string')) {
+    return res.status(400).json({ error: 'ids must be an array of capture ids' });
+  }
+  res.json({ ok: store.reorder(ids) });
+});
+
+app.get('/api/captures/:id/avatar', (req, res) => {
+  const rec = store.get(req.params.id);
+  const dataUrl = rec && (rec.avatarBase64 || (rec.character && rec.character.avatarBase64));
+  const match = typeof dataUrl === 'string'
+    && dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/);
+  if (!match) return res.status(404).end();
+  res.type(match[1]).send(Buffer.from(match[2], 'base64'));
+});
+
 app.get('/api/captures/:id', (req, res) => {
   const rec = store.get(req.params.id);
   if (!rec) return res.status(404).json({ error: 'not found' });

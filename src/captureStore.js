@@ -227,6 +227,7 @@ function list() {
       out.push({
         id: rec.id,
         ts: rec.ts,
+        sidebarOrder: Number.isInteger(rec.sidebarOrder) ? rec.sidebarOrder : null,
         source: rec.source,
         model: rec.payload && rec.payload.model ? rec.payload.model : '',
         characterName: rec.characterName || '',
@@ -238,8 +239,29 @@ function list() {
       // skip corrupt files
     }
   }
-  out.sort((a, b) => b.ts - a.ts);
+  out.sort((a, b) => {
+    // Once the user has manually ordered records, retain that order. New or
+    // legacy records without a position stay below it, newest first.
+    if (a.sidebarOrder != null && b.sidebarOrder != null) return a.sidebarOrder - b.sidebarOrder;
+    if (a.sidebarOrder != null) return -1;
+    if (b.sidebarOrder != null) return 1;
+    return b.ts - a.ts;
+  });
   return out;
+}
+
+/** Persist the sidebar order supplied by the current browser list. */
+function reorder(ids) {
+  if (!Array.isArray(ids) || new Set(ids).size !== ids.length) return false;
+  let changed = false;
+  ids.forEach((id, index) => {
+    const rec = get(id);
+    if (!rec) return;
+    rec.sidebarOrder = index;
+    fs.writeFileSync(fileFor(id), JSON.stringify(rec, null, 2), 'utf8');
+    changed = true;
+  });
+  return changed;
 }
 
 function get(id) {
@@ -361,7 +383,7 @@ function clearChatId(id) {
 }
 
 module.exports = {
-  save, saveInspection, attachPayload, list, get, remove,
+  save, saveInspection, attachPayload, list, get, remove, reorder,
   attachProbePayload, refreshInspection, attachCatalog, attachCharacter, attachCardData,
   attachPublicLorebooks, attachPublicScriptReconstruction, attachPrivateLorebookReconstruction, attachMacroUserName,
   mergePublicLorebooks, attachChatId, clearChatId,
