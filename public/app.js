@@ -415,6 +415,8 @@ const RM_KEY = {
   jailbreak: 'rmJailbreak', card: 'rmCard', userPersona: 'rmUserPersona',
   scenario: 'rmScenario', example: 'rmExample', knownCard: 'rmKnownCard',
   publicLorebook: 'rmPublicLorebook',
+  injectedPersona: 'rmInjectedPersona', injectedScenario: 'rmInjectedScenario',
+  injectedExample: 'rmInjectedExample', injectedFirstMessage: 'rmInjectedFirstMessage',
 };
 
 async function renderProvenance(rec, sep) {

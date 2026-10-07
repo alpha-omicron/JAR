@@ -8,9 +8,12 @@ const express = require('express');
 
 const store = require('./captureStore');
 const {
-  separate, getSystemContent,
+  separate, splitEntries, getSystemContent,
   extractCard, extractCharName, extractScenario, extractExample, extractFirstMessage,
 } = require('./separate');
+const {
+  fieldsFromPayload, fieldsFromMeta, scanInjectedFields, appendRecovered,
+} = require('./fieldDiff');
 const { extract, buildExtractionMessages } = require('./extract');
 const {
   BrowserManager, openLogin, logout, requireLogin, getStatus, getAvatarUrl, downloadAvatar,
@@ -244,7 +247,17 @@ app.post('/api/separate', (req, res) => {
   const rec = store.get(req.body.id);
   if (!rec) return res.status(404).json({ error: 'not found' });
   const publicContents = publicEntryContents(rec.publicLorebooks);
-  res.json(separate(rec.payload, req.body.knownCard || '', publicContents));
+  const base = separate(rec.payload, req.body.knownCard || '', publicContents);
+  const built = assembleResult(
+    rec, rec.probePayload, '', rec.context, rec.meta, rec.avatarBase64, publicContents,
+  );
+  res.json({
+    ...base,
+    lorebookText: built.lorebookText,
+    entries: splitEntries(built.lorebookText),
+    removed: built.provenance,
+    fieldInjections: built.fieldInjections,
+  });
 });
 
 /**
@@ -268,7 +281,9 @@ function resolveExtractInputs(req) {
       lorebookText = getSystemContent(rec.payload);
     } else {
       const publicContents = publicEntryContents(rec.publicLorebooks);
-      lorebookText = separate(rec.payload, req.body.knownCard || '', publicContents).lorebookText;
+      lorebookText = assembleResult(
+        rec, rec.probePayload, '', rec.context, rec.meta, rec.avatarBase64, publicContents,
+      ).lorebookText;
     }
   }
   // Context sources for key inference — each independently selectable from the
@@ -508,6 +523,18 @@ function conversationSummary(chat, chatId) {
  */
 function assembleResult(fullCap, probePayload, card, ctx, meta, avatarBase64, publicContents) {
   const sep = separate(fullCap.payload, '', publicContents);
+  const fieldInjections = scanInjectedFields({
+    capture: fieldsFromPayload(fullCap.payload),
+    probe: probePayload ? fieldsFromPayload(probePayload) : null,
+    clean: isCardPublic(meta) ? fieldsFromMeta(meta) : null,
+    publicContents,
+    existing: sep.lorebookText,
+  });
+  const lorebookText = appendRecovered(sep.lorebookText, fieldInjections);
+  const provenance = sep.removed.concat(fieldInjections.map((block) => ({
+    label: `injected${block.field[0].toUpperCase()}${block.field.slice(1)}`,
+    text: block.text,
+  })));
 
   // The trigger is keyword-dense by design, so JanitorAI may inject lorebook
   // content into its persona/scenario/example fields. Build the private card
@@ -533,10 +560,12 @@ function assembleResult(fullCap, probePayload, card, ctx, meta, avatarBase64, pu
   };
 
   return {
-    lorebookText: sep.lorebookText,
+    lorebookText,
     card,
     catalog: combineContext(ctx),
     character,
+    fieldInjections,
+    provenance,
   };
 }
 

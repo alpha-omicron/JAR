@@ -12,6 +12,7 @@
     "test:chat-export": "node test/chatExport.test.js",
     "test:probe-capture": "node test/probeCapture.test.js",
     "test:proxy-permission": "node test/proxyPermission.test.js",
+    "test:field-diff": "node test/fieldDiff.test.js",
     "postinstall": "playwright install chromium"
   },
   "dependencies": {

@@ -221,6 +221,7 @@ function separate(payload, knownCard, publicContents) {
 module.exports = {
   separate,
   splitEntries,
+  stripPublicEntries,
   getSystemContent,
   extractCard,
   extractCharName,
