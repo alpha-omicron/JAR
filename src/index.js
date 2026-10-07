@@ -60,8 +60,9 @@ function broadcast(event, data) {
 }
 
 // ---- capture waiters (used by auto-trigger to await the next generateAlpha) ----
-// When the auto-trigger sends its "." probe, the resulting capture is only used
-// to read the character card — it is NOT saved to the captures list.
+// When the auto-trigger sends its "." probe, the resulting capture is held in
+// memory until it can be attached to the triggered record — it is not listed as
+// an independent capture.
 let suppressNextCapture = false;
 // When set, the next NON-suppressed generateAlpha capture is attached to this
 // existing (inspected) record instead of creating a brand-new one — keeps the
@@ -101,7 +102,7 @@ const browser = new BrowserManager({
   onCapture: (rec) => {
     if (suppressNextCapture) {
       suppressNextCapture = false;
-      console.log(`[capture] ${rec.source} (probe — not saved)`);
+      console.log(`[capture] ${rec.source} (neutral probe — awaiting trigger capture)`);
       resolveWaiters({ id: null, payload: rec.payload, source: rec.source, ts: Date.now() });
       return;
     }
@@ -136,8 +137,9 @@ function composerOpts() {
  * (and selected trigger sources) into a single latest
  * user turn so every keyword is within scan depth regardless of JanitorAI's
  * server-side scan rules (which scan recent messages by depth, not by author).
- * Returns the card (for extraction context) and the second ("full") saved capture.
- * Caller resets suppressNextCapture in finally.
+ * Returns the neutral probe (for card recovery) and the second ("full") capture.
+ * The trigger capture is intentionally reserved for lorebook isolation: it can
+ * contain lorebook text injected into character fields.
  */
 async function runAutoTrigger(page, extraTriggerText = '', includeCard = true) {
   const opts = composerOpts();
@@ -147,6 +149,7 @@ async function runAutoTrigger(page, extraTriggerText = '', includeCard = true) {
   const dotWait = waitNextCapture(60000);
   await sendMessage(page, '.', opts);
   const dotCap = await dotWait;
+  console.log('[capture] neutral probe captured; preparing lorebook trigger');
 
   const card = extractCard(dotCap.payload);
   if (!card) throw new Error('could not find the character card in the capture');
@@ -158,8 +161,9 @@ async function runAutoTrigger(page, extraTriggerText = '', includeCard = true) {
   const fullWait = waitNextCapture(120000);
   await sendMessage(page, triggerText, opts);
   const fullCap = await fullWait;
+  console.log('[capture] lorebook trigger captured');
 
-  return { card, fullCap };
+  return { card, probeCap: dotCap, fullCap };
 }
 
 function lorebookNames(rec) {
@@ -491,10 +495,14 @@ function conversationSummary(chat, chatId) {
  * Assemble the capture result: isolated lorebook text and the extracted
  * character card. Does NOT auto-build with LLM — user triggers that manually.
  */
-function assembleResult(fullCap, card, ctx, meta, avatarBase64, publicContents) {
+function assembleResult(fullCap, probePayload, card, ctx, meta, avatarBase64, publicContents) {
   const sep = separate(fullCap.payload, '', publicContents);
 
-  const payload = fullCap.payload;
+  // The trigger is keyword-dense by design, so JanitorAI may inject lorebook
+  // content into its persona/scenario/example fields. Build the private card
+  // from the neutral "." probe instead, falling back to the trigger only for
+  // older captures that have no saved probe at all.
+  const payload = probePayload || fullCap.payload;
   const greetings = collectGreetings(meta, extractFirstMessage(payload));
 
   // Public definition → take the real fields verbatim; otherwise reconstruct the
@@ -618,7 +626,9 @@ app.post('/api/capture', async (req, res) => {
     // Already captured → reuse the stored payload unless the user explicitly
     // requests a fresh trigger run with different source selections or keywords.
     if (rec.payload && !req.body.force) {
-      const built = assembleResult(rec, '', rec.context, meta, avatarBase64, publicContents);
+      const built = assembleResult(
+        rec, rec.probePayload, '', rec.context, meta, avatarBase64, publicContents,
+      );
       return res.json({
         id: rec.id, lorebookText: built.lorebookText, character: built.character, reused: true,
       });
@@ -686,9 +696,15 @@ app.post('/api/capture', async (req, res) => {
         const trigger = buildTriggerText(rec, req.body.trigger);
         // Attach the upcoming generateAlpha capture to THIS inspected record.
         pendingCaptureId = rec.id;
-        const { card, fullCap } = await runAutoTrigger(page, trigger.text, trigger.includeCard);
+        const { card, probeCap, fullCap } = await runAutoTrigger(
+          page, trigger.text, trigger.includeCard,
+        );
 
-        const result = assembleResult(fullCap, card, rec.context, meta, avatarBase64, publicContents);
+        const result = assembleResult(
+          fullCap, probeCap.payload, card, rec.context, meta, avatarBase64, publicContents,
+        );
+        store.attachProbePayload(rec.id, probeCap.payload);
+        console.log(`[capture] neutral probe stored with ${rec.id}`);
         store.attachCardData(fullCap.id, result.character);
 
         // If closed lorebook content was extracted → the chat served its purpose,
@@ -1146,16 +1162,20 @@ function openInDefaultBrowser(url) {
   } catch (_) { /* non-fatal: the URL is printed below anyway */ }
 }
 
-// Bind to loopback only: the server handles Saucepan credentials/token and has
-// no auth, so it must never be reachable from the LAN.
-app.listen(PORT, () => {
-  const url = `http://localhost:${PORT}`;
-  console.log(`[JAR]  ${url}`);
-  console.log('[JAR]  browser opens only for login (visible) / extraction (off-screen), closes after.');
-  openInDefaultBrowser(url);
-});
+if (require.main === module) {
+  // Bind to loopback only: the server handles Saucepan credentials/token and has
+  // no auth, so it must never be reachable from the LAN.
+  app.listen(PORT, () => {
+    const url = `http://localhost:${PORT}`;
+    console.log(`[JAR]  ${url}`);
+    console.log('[JAR]  browser opens only for login (visible) / extraction (off-screen), closes after.');
+    openInDefaultBrowser(url);
+  });
 
-// Tear the browser down cleanly on exit.
-for (const sig of ['SIGINT', 'SIGTERM']) {
-  process.on(sig, () => { browser.dispose().finally(() => process.exit(0)); });
+  // Tear the browser down cleanly on exit.
+  for (const sig of ['SIGINT', 'SIGTERM']) {
+    process.on(sig, () => { browser.dispose().finally(() => process.exit(0)); });
+  }
 }
+
+module.exports = { app, assembleResult };

@@ -10,6 +10,7 @@
     "start": "node src/index.js",
     "test:separate": "node test/separate.test.js",
     "test:chat-export": "node test/chatExport.test.js",
+    "test:probe-capture": "node test/probeCapture.test.js",
     "postinstall": "playwright install chromium"
   },
   "dependencies": {

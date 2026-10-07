@@ -147,6 +147,19 @@ function attachPayload(id, payload, source) {
   return rec;
 }
 
+/**
+ * Attach the neutral generateAlpha probe captured before a lorebook trigger.
+ * It is retained alongside the triggered payload so private card reconstruction
+ * can use the unmodified character fields on later reloads and retries.
+ */
+function attachProbePayload(id, probePayload) {
+  const rec = get(id);
+  if (!rec) return false;
+  rec.probePayload = probePayload || null;
+  fs.writeFileSync(fileFor(id), JSON.stringify(rec, null, 2), 'utf8');
+  return true;
+}
+
 function systemContent(payload) {
   const msgs = payload && Array.isArray(payload.messages) ? payload.messages : [];
   const sys = msgs.find((m) => m && m.role === 'system');
@@ -261,7 +274,7 @@ function clearChatId(id) {
 
 module.exports = {
   save, saveInspection, attachPayload, list, get, remove,
-  attachCatalog, attachCharacter, attachCardData,
+  attachProbePayload, attachCatalog, attachCharacter, attachCardData,
   attachPublicLorebooks, attachChatId, clearChatId,
   findByCharacterId, attachConversation, updateConversation, removeConversation,
   systemContent, DIR,
