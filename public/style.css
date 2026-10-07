@@ -266,10 +266,17 @@ dialog h2 { margin-top: 0; font-size: 15px; }
   margin-top: 4px; padding: 8px 10px; border-radius: 6px; font-size: 12px;
   background: rgba(229, 100, 92, 0.12); border: 1px solid var(--danger); color: #f1b0ab;
 }
+.prov-note {
+  display: flex; align-items: flex-start; gap: 7px; margin-top: 4px; padding: 8px 10px;
+  border-radius: 6px; font-size: 12px; background: rgba(110, 168, 254, 0.08);
+  border: 1px solid rgba(110, 168, 254, 0.35); color: #b9d3ff;
+}
+.prov-note .icon { margin-top: 1px; }
 .prov-item { margin-top: 2px; }
 .prov-item > summary { font-size: 12px; cursor: pointer; padding: 4px 0; color: var(--text); }
 .prov-item > summary:hover { color: var(--accent); }
 .prov-item .msg-body { margin-top: 4px; max-height: 200px; }
+.msg-body.empty-extracted { color: var(--muted); font-family: inherit; line-height: 1.5; }
 
 /* action divider (OR separator between download raw / LLM build) */
 .action-divider {

@@ -362,7 +362,8 @@ async function selectCapture(id) {
     // card/scenario carried as context). The textarea holds that raw source.
     const sys = (msgs.find((m) => m && m.role === 'system') || {}).content || '';
     $('lorebookText').value = sys;
-    renderExtractedContent('');
+    renderExtractedContent('', t('advancedExtractedNotice'));
+    $('provBody').innerHTML = `<div class="prov-note">${iconSvg('code')} ${escapeHtml(t('advancedBreakdownNotice'))}</div>`;
   } else if (captured) {
     try {
       const r = await api('/api/separate', {
@@ -395,7 +396,6 @@ function updateLorebookEmpty() {
   // there's nothing meaningful to show or download before the LLM build.
   const adv = state.hasAdvanced === true;
   $('advancedNotice').classList.toggle('hidden', !adv);
-  $('lorebookEntries').classList.toggle('hidden', adv);
   $('dlExtractedRow').classList.toggle('hidden', adv);
   $('extractedDivider').classList.toggle('hidden', adv);
 
@@ -575,10 +575,24 @@ async function buildJsBook(i, btn) {
 // naive blank-line split into per-entry blocks was misleading: a single logical
 // entry usually spans several paragraphs, so it over-segmented. Without an LLM we
 // can't recover real entry boundaries or keys, so we present the raw text as-is.
-function renderExtractedContent(text) {
+function renderExtractedContent(text, emptyNote = '') {
   const container = $('lorebookEntries');
   container.innerHTML = '';
-  if (!text || !text.trim()) return;
+  if (!text || !text.trim()) {
+    if (!emptyNote) return;
+    const details = document.createElement('details');
+    details.className = 'msg-block msg-lorebook';
+    details.open = true;
+    const summary = document.createElement('summary');
+    summary.className = 'msg-role';
+    summary.textContent = t('extractedContent');
+    const body = document.createElement('div');
+    body.className = 'msg-body empty-extracted';
+    body.textContent = emptyNote;
+    details.append(summary, body);
+    container.appendChild(details);
+    return;
+  }
   const details = document.createElement('details');
   details.className = 'msg-block msg-lorebook';
   details.open = true;

@@ -63,6 +63,8 @@ const I18N = {
   privateHint: 'This character has {n} closed lorebooks which need to be extracted.', private: 'private',
   noLorebook: 'this character has no lorebook',
   advancedNotice: 'This character uses JS (advanced) lorebooks. The lorebook content must be collected with an LLM.',
+  advancedBreakdownNotice: 'Heuristic separation is disabled for advanced/JS lorebooks. The full triggered system prompt is sent to the build LLM, which isolates the lorebook entries.',
+  advancedExtractedNotice: 'No reliable raw extraction is shown for advanced/JS lorebooks. Use Build lorebook or Preview prompt to inspect the full triggered prompt sent to the LLM.',
   settingsTitle: 'extraction LLM (OpenAI-compatible)', lblDefaultLoreTrigger: 'default lorebook trigger text',
   phDefaultLoreTrigger: 'keywords appended to every lorebook extraction…',
   defaultLoreTriggerHint: 'saved locally and appended to every extraction prompt.',
