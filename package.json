@@ -11,6 +11,7 @@
     "test:separate": "node test/separate.test.js",
     "test:chat-export": "node test/chatExport.test.js",
     "test:probe-capture": "node test/probeCapture.test.js",
+    "test:capture-response": "node test/captureResponse.test.js",
     "test:proxy-permission": "node test/proxyPermission.test.js",
     "test:field-diff": "node test/fieldDiff.test.js",
     "test:build-context": "node test/buildContext.test.js",

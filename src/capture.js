@@ -133,6 +133,37 @@ function looksLikePayload(obj) {
     && obj.messages.some((m) => m && m.role === 'system' && typeof m.content === 'string');
 }
 
+/**
+ * Parse either the normal JSON response or JSON carried in an SSE response.
+ * Reading a Playwright Response more than once is unsafe for this endpoint:
+ * Chromium can discard its DevTools resource after the first read attempt.
+ */
+function parseGenerateAlphaPayload(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+  const candidates = [raw];
+  for (const line of raw.split(/\r?\n/)) {
+    const match = line.match(/^\s*data:\s*(.+?)\s*$/);
+    if (match && match[1] !== '[DONE]') candidates.push(match[1]);
+  }
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (looksLikePayload(parsed)) return parsed;
+    } catch (_) { /* try the next framing */ }
+  }
+  // Some proxies add non-JSON framing around a single JSON payload.
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    try {
+      const parsed = JSON.parse(raw.slice(start, end + 1));
+      if (looksLikePayload(parsed)) return parsed;
+    } catch (_) { /* unavailable / non-JSON response */ }
+  }
+  return null;
+}
+
 /** Read the active persona name from the same request that produced a capture. */
 function requestPersonaName(request) {
   try {
@@ -229,7 +260,9 @@ async function startCapture({
   };
 
   // Rewrite the outgoing `/generateAlpha` request for the isolated capture
-  // persona and a one-shot history exclusion on the neutral probe.
+  // persona and a one-shot history exclusion on the neutral probe. This must stay
+  // a browser-native request: `route.fetch()` uses Playwright's API client and is
+  // blocked by JanitorAI's firewall.
   // JanitorAI's UI needs its opening greeting rendered, but its words must not be
   // sent to prompt assembly where they could activate lorebook entries.
   // Every matching request MUST be continued, modified or not.
@@ -238,58 +271,40 @@ async function startCapture({
     if (req.method() !== 'POST') return route.continue();
     const persona = getPersonaOverride ? getPersonaOverride() : null;
     const exclusions = getNextMessageExclusions ? getNextMessageExclusions() : [];
-    if (!persona && !exclusions.length) return route.continue();
     try {
       const raw = req.postData();
-      if (!raw) return route.continue();
+      if (!raw || (!persona && !exclusions.length)) return route.continue();
       const body = JSON.parse(raw);
       const personaChanged = applyPersonaOverride(body, persona);
       const excluded = excludeChatMessages(body, exclusions);
       if (excluded.length) consumeMessageExclusions?.(excluded);
       if (!personaChanged && !excluded.length) return route.continue();
       return route.continue({ postData: JSON.stringify(body) });
-    } catch (_) {
-      return route.continue();
-    }
+    } catch (_) { return route.continue(); }
   });
 
-  // The ONLY thing we care about is the `/generateAlpha` RESPONSE: it is the prompt
-  // JanitorAI assembled for this turn, with `<...Persona>` / `<Scenario>` wrappers
-  // intact — exactly what separate() strips. What the JanitorAI client does with it
-  // afterwards (reformat via pygmalion mode, POST it to the configured proxy, etc.)
-  // is irrelevant and is NOT captured: that downstream body is reordered and has the
-  // wrappers dropped, which is precisely what we must avoid.
+  // The ONLY thing we care about is the `/generateAlpha` RESPONSE: it is the
+  // prompt JanitorAI assembled for this turn. Read the DevTools body exactly
+  // once; trying `response.json()` and then `response.text()` made a second
+  // Network.getResponseBody request after Chromium had discarded the resource.
   context.on('response', async (response) => {
     const url = response.url();
     if (!url.includes('/generateAlpha')) return;
-    if (response.status() === 403) {
-      const text = await response.text().catch(() => '');
-      if (isProxyForbiddenResponse(response.status(), text)) {
-        console.warn('[capture] JanitorAI refused proxy generation');
-        onCaptureError?.(proxyForbiddenError());
-        return;
-      }
-    }
-    // Brotli-encoded JSON (Playwright decompresses for us). The request sets
-    // accept: text/event-stream, so be defensive: if .json() can't parse it, read
-    // raw text and pull the JSON object out before giving up.
-    let body = null;
+    let text;
     try {
-      body = await response.json();
-    } catch (_) {
-      try {
-        const txt = await response.text();
-        const i = txt.indexOf('{');
-        const j = txt.lastIndexOf('}');
-        if (i >= 0 && j > i) body = JSON.parse(txt.slice(i, j + 1));
-      } catch (e) {
-        console.warn('[capture] generateAlpha response body unavailable:', e.message);
-        return;
-      }
+      text = await response.text();
+    } catch (e) {
+      console.warn('[capture] generateAlpha response body unavailable:', e.message);
+      return;
     }
-    if (looksLikePayload(body)) {
-      deliver(url, body, 'generateAlpha', requestPersonaName(response.request()));
+    if (response.status() === 403 && isProxyForbiddenResponse(response.status(), text)) {
+      console.warn('[capture] JanitorAI refused proxy generation');
+      onCaptureError?.(proxyForbiddenError());
+      return;
     }
+    const body = parseGenerateAlphaPayload(text);
+    if (body) deliver(url, body, 'generateAlpha', requestPersonaName(response.request()));
+    else console.warn('[capture] generateAlpha response did not contain an assembled payload');
   });
 
   const page = context.pages()[0] || (await context.newPage());
@@ -408,6 +423,7 @@ class BrowserManager {
 
 module.exports = {
   startCapture,
+  parseGenerateAlphaPayload,
   excludeChatMessages,
   BrowserManager,
   pickPage,
