@@ -84,20 +84,20 @@ async function requireLogin(context) {
   throw new Error('Not logged into JanitorAI — open the JanitorAI session panel and Log in first.');
 }
 
-/** Best-effort find the character avatar URL in the chat DOM. */
+/** Best-effort find a character avatar URL in the JanitorAI DOM. */
 async function getAvatarUrl(page) {
   try {
     return await page.evaluate(() => {
       const imgs = Array.from(document.querySelectorAll('img'));
       const a = imgs.find((img) =>
-        img.src.includes('ella.janitorai.com')
+        (img.src.includes('ella.janitorai.com') || img.src.includes('janitorsunite.b-cdn.net'))
         && (img.src.includes('/bot-avatars/') || img.src.includes('/chats/')));
       return a ? a.src : null;
     });
   } catch (_) { return null; }
 }
 
-/** Download an avatar (in-page fetch → data URL, sharing the cookie jar). */
+/** Download an avatar using the browser, including CDNs that disallow CORS fetches. */
 async function downloadAvatar(page, url) {
   if (!url) return '';
   try {
@@ -114,6 +114,22 @@ async function downloadAvatar(page, url) {
     }, url);
     if (data && data.startsWith('data:image/')) return data;
   } catch (_) { /* ignore */ }
+  // Browsers can display a cross-origin image even when its CDN does not grant
+  // the CORS permission required by fetch(). Navigate a separate tab instead,
+  // keeping the request browser-native and the operation page undisturbed.
+  let imagePage;
+  try {
+    if (!/^https?:\/\//i.test(url)) return '';
+    imagePage = await page.context().newPage();
+    const response = await imagePage.goto(url, { waitUntil: 'load', timeout: 30000 });
+    if (!response || !response.ok()) return '';
+    const type = String(response.headers()['content-type'] || '').split(';')[0].trim().toLowerCase();
+    if (!/^image\/[a-z0-9.+-]+$/.test(type)) return '';
+    const data = await response.body();
+    if (!data.length || data.length > 12 * 1024 * 1024) return '';
+    return `data:${type};base64,${data.toString('base64')}`;
+  } catch (_) { /* unavailable */ }
+  finally { if (imagePage) await imagePage.close().catch(() => {}); }
   return '';
 }
 

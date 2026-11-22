@@ -15,6 +15,11 @@ assert.deepStrictEqual(collectGreetings(
   { first_messages: ['Catalog greeting'] }, 'Probe response', extractionChat,
 ), ['Chat primary greeting', 'Chat alternate greeting']);
 
+// JanitorAI may reserve slot 0 as null and provide the primary separately.
+assert.deepStrictEqual(collectGreetings(null, '', {
+  character: { first_message: 'Primary', first_messages: [null, 'Alt 1', 'Alt 2'] },
+}), ['Primary', 'Alt 1', 'Alt 2']);
+
 // Hidden definitions occasionally omit greeting fields from chat.character;
 // the initial bot message is still the real opening greeting.
 assert.deepStrictEqual(collectGreetings(

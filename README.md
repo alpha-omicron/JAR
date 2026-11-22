@@ -68,7 +68,7 @@ The program does not collect or store your login credentials — it only reads t
 
 2. **Inspect a character** — paste the character URL into the sidebar and click **extract**. This pulls the card, avatar, and any public lorebooks.
 
-3. **Extract a private card** — if the character definition is hidden, click **extract card** in the *character card* tab. The tool creates a chat, sends a probe, captures the card from the sent request.
+3. **Extract a private card** — if the character definition is hidden, click **extract card** in the *character card* tab. The tool creates a chat, sends a probe, and captures the assembled prompt. If the character disallows proxies, JAR instead shows an incomplete editable card with public details and available greetings. It creates and deletes a temporary chat to retrieve greetings without generating a response. Fill in missing fields manually, save edits locally, and download the card; private definitions and closed lorebooks cannot be captured through the proxy method in this case.
 
 4. **Extract a closed lorebook** — click **extract** in the *lorebook* tab. Sends the selected context to trigger lorebook entries on Janitor servers. Then, those entries are intercepted. Click "build lorebook" and select context to send these entries to an LLM of choice to reconstruct a lorebook.
 

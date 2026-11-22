@@ -164,6 +164,21 @@
           </div>
           <div id="cardFormBlock" class="block">
             <div id="charSource" class="card-source hidden"></div>
+            <div id="partialCardWarning" class="partial-warning hidden" role="alert">
+              <strong data-i18n="partialWarningTitle">Incomplete character definition</strong>
+              <p data-i18n="partialCardWarning"></p>
+              <p data-i18n="partialManualLegend"></p>
+              <div class="partial-prompt">
+                <strong data-i18n="partialPromptTitle">Try asking the character</strong>
+                <p data-i18n="partialPromptHint"></p>
+                <textarea id="partialPrompt" rows="6" readonly aria-label="Suggested prompt"></textarea>
+                <div class="row"><button id="copyPartialPromptBtn" type="button" class="ghost" data-i18n="copyPartialPrompt">copy prompt</button><span id="partialPromptStatus" class="muted" aria-live="polite"></span></div>
+              </div>
+            </div>
+            <div id="partialSaveBar" class="partial-save hidden">
+              <button id="savePartialCardBtn" class="primary" data-i18n="savePartialCard">save card edits</button>
+              <span id="partialSaveStatus" aria-live="polite"></span>
+            </div>
             <div class="char-grid">
               <div class="char-header">
                 <div class="char-name-wrap full-width">
@@ -182,6 +197,7 @@
               <div id="charAltGreetingsBlock" class="hidden">
                 <label class="muted"><span data-i18n="lblAltGreetings">alternate greetings</span> <span id="charAltCount" class="muted"></span></label>
                 <div id="charAltGreetings"></div>
+                <button id="addGreetingBtn" type="button" class="ghost small" data-i18n="addGreetingBtn">add greeting</button>
               </div>
               <label class="muted" data-i18n="lblExample">example messages</label>
               <textarea id="charExample" rows="3" placeholder="Example Dialogue…"></textarea>

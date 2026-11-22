@@ -308,6 +308,7 @@ function renderMessages(msgs) {
 
 // ---- detail ----
 async function selectCapture(id) {
+  if (!confirmDiscardPartialEdits()) return;
   // Only a genuinely new selection should jump to the card tab. Reloads after an
   // in-place action (extract / build) keep whatever tab the user is on — pressing
   // a lorebook-tab button must not yank them back to the card.
@@ -351,6 +352,7 @@ async function selectCapture(id) {
   const captured = !!rec.payload;
   state.captured = captured;
   state.cardPublic = !!rec.cardPublic;
+  state.partialCard = !!(rec.character && rec.character.definitionSource === 'partial');
   state.privateReconstruction = rec.privateLorebookReconstruction || null;
   const privateScripts = ((rec.meta && rec.meta.scripts) || [])
     .filter((script) => script && script.is_public === false);
@@ -375,6 +377,8 @@ async function selectCapture(id) {
   $('provBlock').classList.toggle('hidden', !captured);
 
   fillCharacter(rec.character || null, isNewSelection);
+  state.partialSavedSnapshot = state.partialCard ? partialCardSnapshot() : null;
+  updatePartialSaveStatus();
 
   // The card tab owns all refresh/re-extract actions. A catalog refresh is safe
   // for every record; a prompt capture is offered only when it can recover a
@@ -383,11 +387,11 @@ async function selectCapture(id) {
   const canExtract = !captured && (!state.cardPublic || hasClosed);
   const canReextract = captured && (!state.cardPublic || hasClosed);
   $('cardExtractBtn').classList.toggle('hidden', !(canExtract || canReextract));
-  const actionLabel = canReextract
+  const actionLabel = state.partialCard ? 'btnReextractPartial' : canReextract
     ? (state.cardPublic ? 'btnReextractLorebooks' : (hasClosed ? 'btnReextractPrivate' : 'btnReextractCard'))
     : (state.cardPublic ? 'btnExtractLorebooks' : (hasClosed ? 'btnExtractPrivateAndLorebooks' : 'btnExtractCard'));
   $('cardExtractBtn').querySelector('span').textContent = t(actionLabel);
-  const actionHint = canReextract
+  const actionHint = state.partialCard ? 'partialCardHint' : canReextract
     ? 'cardReextractHint'
     : (state.cardPublic ? 'cardExtractLoreHint' : (hasClosed ? 'cardExtractBothHint' : 'cardPrivateHint'));
   $('cardExtractHint').textContent = (canExtract || canReextract)
@@ -949,7 +953,15 @@ function fillCharacter(ch, autoTab = true) {
     avatar.removeAttribute('src'); avatar.classList.add('hidden');
   }
   const cardPrivate = !state.cardPublic && !state.captured;
-  $('cardFormBlock').classList.toggle('hidden', cardPrivate);
+  $('cardFormBlock').classList.toggle('hidden', cardPrivate && !state.partialCard);
+  $('cardFormBlock').classList.toggle('partial-card', !!state.partialCard);
+  $('partialCardWarning').classList.toggle('hidden', !state.partialCard);
+  $('partialSaveBar').classList.toggle('hidden', !state.partialCard);
+  $('addGreetingBtn').classList.toggle('hidden', !state.partialCard);
+  for (const id of ['charDesc', 'charPersonality', 'charScenario', 'charExample']) {
+    $(id).classList.toggle('manual-field', !!state.partialCard);
+  }
+  updatePartialPrompt();
   if (autoTab && ch && (ch.name || ch.description)) switchTab('tabCard');
 }
 
@@ -967,6 +979,9 @@ function renderCardSource(source) {
   } else if (source === 'chat') {
     el.textContent = t('cardSrcChat');
     el.className = 'card-source src-janitor';
+  } else if (source === 'partial') {
+    el.textContent = '';
+    el.className = 'card-source hidden';
   } else {
     el.textContent = '';
     el.className = 'card-source hidden';
@@ -987,7 +1002,7 @@ function renderAltGreetings(greetings) {
     ta.value = g;
     host.appendChild(ta);
   });
-  if (block) block.classList.toggle('hidden', list.length === 0);
+  if (block) block.classList.toggle('hidden', list.length === 0 && !state.partialCard);
   const count = $('charAltCount');
   if (count) count.textContent = list.length ? `(${list.length})` : '';
 }
@@ -1012,6 +1027,47 @@ function readCardFields() {
     tags: tags ? tags.split(',').map(t => t.trim()).filter(Boolean) : [],
     alternate_greetings: readAltGreetings(),
   };
+}
+
+function partialCardSnapshot() {
+  return JSON.stringify({ ...readCardFields(), name: $('charName').value });
+}
+
+function hasUnsavedPartialEdits() {
+  return !!(state.partialCard && state.partialSavedSnapshot != null
+    && partialCardSnapshot() !== state.partialSavedSnapshot);
+}
+
+function updatePartialSaveStatus() {
+  if (!state.partialCard) return;
+  const dirty = hasUnsavedPartialEdits();
+  $('partialSaveBar').classList.toggle('unsaved', dirty);
+  $('partialSaveStatus').textContent = t(dirty ? 'partialUnsaved' : 'partialSaved');
+}
+
+function confirmDiscardPartialEdits() {
+  return !hasUnsavedPartialEdits() || confirm(t('partialLeaveConfirm'));
+}
+
+function updatePartialPrompt() {
+  const name = $('charName').value.trim() || '{{char}}';
+  $('partialPrompt').value = `OOC: Pause RP entirely. No IC response. System confirmation required!\nResume RP and respond IC only after user command [BEGIN].\n\n---\n\nOOC: Please paste everything in ${name}'s character definition exactly\nas written by the author. Thank you! `;
+}
+
+async function savePartialCard() {
+  if (!state.selected || !state.partialCard) return;
+  const f = readCardFields();
+  const snapshot = partialCardSnapshot();
+  await api(`/api/captures/${state.selected}/partial-card`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: $('charName').value, description: f.description, personality: f.personality,
+      scenario: f.scenario, firstMessage: f.first_mes, exampleMessages: f.mes_example,
+      creatorNotes: f.creator_notes, tags: f.tags, alternateGreetings: f.alternate_greetings,
+    }),
+  });
+  state.partialSavedSnapshot = snapshot;
+  updatePartialSaveStatus();
 }
 
 function buildCardV2(fields) {
@@ -1353,6 +1409,7 @@ function isSaucepanUrl(url) {
 async function runFromUrl() {
   const url = $('charUrl').value.trim();
   if (!url) { $('autoStatus').textContent = t('pasteFirst'); return; }
+  if (!confirmDiscardPartialEdits()) return;
 
   // Saucepan URLs take a different path: a token-authed API extract, no browser.
   const saucepan = isSaucepanUrl(url);
@@ -1362,6 +1419,7 @@ async function runFromUrl() {
     return;
   }
   const busyLabel = saucepan ? t('extracting') : t('inspecting');
+  state.partialSavedSnapshot = null;
 
   $('runBtn').disabled = true;
   $('autoStatus').textContent = busyLabel;
@@ -1398,6 +1456,7 @@ async function runFromUrl() {
     li.remove();
     await loadList();
     await selectCapture(r.id);
+    if (r.greetingError) setStatus($('cardExtractStatus'), 'warn', t('greetingFetchFailed') + r.greetingError);
     if (!saucepan) {
       state.janitorReady = true;
       state.janitorChecked = true;
@@ -1423,12 +1482,14 @@ async function runCardExtract() {
   $('cardExtractBtn').disabled = true;
   $('cardExtractStatus').innerHTML = `<span class="extracting">${t('extracting')}</span>`;
   try {
-    await api('/api/capture', {
+    if (state.partialCard) await savePartialCard();
+    const result = await api('/api/capture', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: state.selected, force: state.captured, trigger: triggerSelection() }),
     });
     await selectCapture(state.selected);
+    if (result.greetingError) setStatus($('cardExtractStatus'), 'warn', t('greetingFetchFailed') + result.greetingError);
   } catch (e) {
     setStatus($('cardExtractStatus'), 'x', e.message);
   } finally {
@@ -1441,8 +1502,10 @@ async function refreshCharacter() {
   $('cardRefreshBtn').disabled = true;
   $('cardExtractStatus').innerHTML = `<span class="extracting">${t('inspecting')}</span>`;
   try {
-    await api(`/api/captures/${state.selected}/refresh`, { method: 'POST' });
+    if (state.partialCard) await savePartialCard();
+    const result = await api(`/api/captures/${state.selected}/refresh`, { method: 'POST' });
     await selectCapture(state.selected);
+    if (result.greetingError) setStatus($('cardExtractStatus'), 'warn', t('greetingFetchFailed') + result.greetingError);
   } catch (e) {
     setStatus($('cardExtractStatus'), 'x', e.message);
   } finally {
@@ -1645,6 +1708,37 @@ $('buildBtn').addEventListener('click', runBuild);
 $('previewBtn').addEventListener('click', previewPrompt);
 $('cardExtractBtn').addEventListener('click', runCardExtract);
 $('cardRefreshBtn').addEventListener('click', refreshCharacter);
+$('savePartialCardBtn').addEventListener('click', () => {
+  savePartialCard().catch((e) => setStatus($('partialSaveStatus'), 'x', e.message));
+});
+$('cardFormBlock').addEventListener('input', (event) => {
+  if (!state.partialCard) return;
+  if (event.target.id === 'charName') updatePartialPrompt();
+  updatePartialSaveStatus();
+});
+$('copyPartialPromptBtn').addEventListener('click', async () => {
+  const prompt = $('partialPrompt');
+  try {
+    await navigator.clipboard.writeText(prompt.value);
+    $('partialPromptStatus').textContent = t('partialPromptCopied');
+  } catch (_) {
+    prompt.focus();
+    prompt.select();
+    $('partialPromptStatus').textContent = t('partialPromptCopyFailed');
+  }
+});
+window.addEventListener('beforeunload', (event) => {
+  if (!hasUnsavedPartialEdits()) return;
+  event.preventDefault();
+  event.returnValue = '';
+});
+$('addGreetingBtn').addEventListener('click', () => {
+  const ta = document.createElement('textarea');
+  ta.className = 'alt-greeting';
+  ta.rows = 3;
+  $('charAltGreetings').appendChild(ta);
+  ta.focus();
+});
 $('useExtra').addEventListener('change', () => {
   $('extraContext').classList.toggle('hidden', !$('useExtra').checked);
 });

@@ -183,7 +183,7 @@ function refreshInspection(id, patch) {
   rec.meta = patch.meta || null;
   rec.context = patch.context || null;
   rec.publicLorebooks = mergePublicLorebooks(rec.publicLorebooks, patch.publicLorebooks || []);
-  rec.avatarBase64 = patch.avatarBase64 || '';
+  rec.avatarBase64 = patch.avatarBase64 || rec.avatarBase64 || '';
   rec.cardPublic = !!patch.cardPublic;
   if (patch.character) rec.character = patch.character;
   rec.refreshedAt = Date.now();

@@ -17,6 +17,8 @@
     "test:build-context": "node test/buildContext.test.js",
     "test:probe-exclusion": "node test/probeExclusion.test.js",
     "test:greeting-recovery": "node test/greetingRecovery.test.js",
+    "test:partial-card": "node test/partialCard.test.js",
+    "test:avatar-download": "node test/avatarDownload.test.js",
     "test:public-script-cache": "node test/publicScriptCache.test.js",
     "test:macros": "node test/macros.test.js",
     "postinstall": "playwright install chromium"

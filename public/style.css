@@ -128,6 +128,17 @@ textarea { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font
 .card-source { font-size: 12px; padding: 7px 11px; border-radius: 8px; margin-bottom: 12px; border: 1px solid var(--border); }
 .card-source.src-janitor { color: #7bdc8a; background: rgba(60, 180, 90, 0.10); border-color: rgba(60, 180, 90, 0.35); }
 .card-source.src-reconstructed { color: #e0b25a; background: rgba(200, 150, 50, 0.10); border-color: rgba(200, 150, 50, 0.35); }
+.partial-warning { border: 1px solid rgba(200, 150, 50, .35); border-left: 3px solid #b98b42; background: rgba(200, 150, 50, .08); color: var(--text); border-radius: 8px; padding: 12px 14px; margin: 12px 0; font-size: 13px; }
+.partial-warning strong { font-size: 14px; color: #e0b25a; }
+.partial-warning p { margin: 8px 0 0; }
+.partial-prompt { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 14px; }
+.partial-prompt strong { font-size: 13px; color: var(--text); }
+.partial-prompt p { margin: 6px 0 10px; color: var(--muted); }
+.partial-prompt textarea { min-height: 130px; }
+.partial-save { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 14px 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; }
+.partial-save.unsaved { border-color: #e5a13e; background: rgba(200, 150, 50, .12); color: #ffcc75; }
+#cardFormBlock.partial-card .manual-field { border: 1px solid #a67e42; background: #292922; }
+#cardFormBlock.partial-card .manual-field:focus { outline: 2px solid #ffcc75; outline-offset: 2px; }
 
 button {
   background: var(--panel2); color: var(--text); border: 1px solid var(--border);

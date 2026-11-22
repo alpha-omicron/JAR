@@ -25,7 +25,7 @@ const { fetchPublicLorebooks, publicEntryContents, contentHash, scriptSourceHash
 const { restoreMacros, restoreCharacterMacros } = require('./macros');
 const { enterExtractionMode, restoreProfile } = require('./profile');
 const { createMacroCapturePersona, deletePersona } = require('./personas');
-const { allowsProxy, proxyForbiddenError } = require('./proxyPermission');
+const { allowsProxy } = require('./proxyPermission');
 const { countTokens } = require('./tokenizer');
 const saucepan = require('./saucepan');
 const { parseChatId, toJsonl } = require('./chatExport');
@@ -255,7 +255,37 @@ app.get('/api/captures/:id/avatar', (req, res) => {
 app.get('/api/captures/:id', (req, res) => {
   const rec = store.get(req.params.id);
   if (!rec) return res.status(404).json({ error: 'not found' });
+  if (!rec.cardPublic && !rec.payload && rec.meta && !allowsProxy(rec.meta)
+      && (!rec.character || rec.character.definitionSource === 'pending')) {
+    rec.character = buildPartialCharacter(rec.meta, rec.avatarBase64, null, rec.character || {});
+    store.attachCardData(rec.id, rec.character);
+  }
   res.json(rec);
+});
+
+// Persist manual edits to an incomplete no-proxy card, without accepting source
+// or avatar changes from the client.
+app.put('/api/captures/:id/partial-card', (req, res) => {
+  const rec = store.get(req.params.id);
+  if (!rec) return res.status(404).json({ error: 'not found' });
+  if (!rec.character || rec.character.definitionSource !== 'partial') {
+    return res.status(400).json({ error: 'not a partial character card' });
+  }
+  const input = req.body || {};
+  const fields = ['name', 'description', 'personality', 'scenario', 'firstMessage', 'exampleMessages', 'creatorNotes'];
+  const character = { ...rec.character };
+  for (const field of fields) {
+    if (typeof input[field] !== 'string') return res.status(400).json({ error: `invalid ${field}` });
+    character[field] = input[field];
+  }
+  for (const field of ['alternateGreetings', 'tags']) {
+    if (!Array.isArray(input[field]) || !input[field].every((v) => typeof v === 'string')) {
+      return res.status(400).json({ error: `invalid ${field}` });
+    }
+    character[field] = input[field];
+  }
+  store.attachCardData(rec.id, character);
+  res.json({ ok: true });
 });
 
 app.delete('/api/captures/:id', (req, res) => {
@@ -529,8 +559,8 @@ function collectGreetings(meta, capturedFirst, extractionChat, storedCharacter) 
   };
   const pushCharacterGreetings = (character) => {
     if (!character || typeof character !== 'object') return;
-    if (Array.isArray(character.first_messages)) character.first_messages.forEach(push);
     push(character.first_message);
+    if (Array.isArray(character.first_messages)) character.first_messages.forEach(push);
     if (Array.isArray(character.alternate_greetings)) character.alternate_greetings.forEach(push);
   };
 
@@ -593,6 +623,37 @@ function buildPublicCharacter(meta, avatarBase64) {
     creatorNotes: (meta && meta.description) || '',
     tags: (meta && meta.custom_tags) || [],
     definitionSource: 'janitor',
+  };
+}
+
+/** Build only from catalog data and an untouched chat, never hidden definition fields. */
+function buildPartialCharacter(meta, avatarBase64, chat, existing = {}) {
+  const greetings = collectGreetings(meta, '', chat, existing);
+  const savedGreetings = [existing.firstMessage, ...(existing.alternateGreetings || [])]
+    .filter((greeting) => typeof greeting === 'string' && greeting.trim());
+  const chatCharacter = chat && chat.character;
+  // Older partial cards dropped the null primary slot and saved every alternate
+  // one position too early. Repair only an exact match; any edits remain intact.
+  const missingCatalogPrimary = meta && Array.isArray(meta.first_messages) && meta.first_messages[0] == null;
+  const missingChatPrimarySlot = chatCharacter && Array.isArray(chatCharacter.first_messages)
+    && chatCharacter.first_messages[0] == null;
+  const repairShiftedGreetings = chatCharacter && chatCharacter.first_message
+    && (missingCatalogPrimary || missingChatPrimarySlot)
+    && savedGreetings.length > 0 && savedGreetings.length === greetings.length - 1
+    && savedGreetings.every((greeting, index) => greeting.trim() === greetings[index + 1]);
+  return {
+    name: existing.name || (meta && meta.name) || '',
+    avatarBase64: avatarBase64 || existing.avatarBase64 || '',
+    description: existing.description || '',
+    personality: existing.personality || '',
+    scenario: existing.scenario || '',
+    firstMessage: repairShiftedGreetings ? greetings[0] : existing.firstMessage || greetings[0] || '',
+    alternateGreetings: !repairShiftedGreetings && (existing.alternateGreetings && existing.alternateGreetings.length)
+      ? existing.alternateGreetings : greetings.slice(1),
+    exampleMessages: existing.exampleMessages || '',
+    creatorNotes: existing.creatorNotes || (meta && meta.description) || '',
+    tags: existing.tags || (meta && meta.custom_tags) || [],
+    definitionSource: 'partial',
   };
 }
 
@@ -816,8 +877,25 @@ async function inspectCharacter(charUrl, characterId) {
       || (await ctx.newPage());
     await page.goto(charUrl, { waitUntil: 'domcontentloaded' }).catch(() => { });
 
-    const meta = await fetchCharacter(page, characterId).catch(() => null);
+    const meta = await fetchCharacter(page, characterId);
+    if (!meta) throw new Error('could not read character metadata');
     const ctxParts = buildContextParts(meta);
+    let greetingChat = null;
+    let greetingError = '';
+    if (meta && !isCardPublic(meta) && !allowsProxy(meta)) {
+      let chatId;
+      try {
+        chatId = await createChat(page, characterId);
+        greetingChat = await fetchChat(page, chatId);
+      } catch (e) {
+        greetingError = e.message;
+        console.warn('[greetings] could not retrieve opening messages:', e.message);
+      } finally {
+        if (chatId) await deleteChat(page, chatId).catch((e) => {
+          console.warn(`[chat] temporary greeting chat ${chatId} could not be deleted:`, e.message);
+        });
+      }
+    }
 
     let publicLorebooks = [];
     try {
@@ -834,19 +912,24 @@ async function inspectCharacter(charUrl, characterId) {
       console.warn('[publiclore] fetch failed:', e.message);
     }
 
-    let avatarUrl = await getAvatarUrl(page);
-    if (!avatarUrl && meta) {
-      const av = meta.avatar || meta.profile_image || '';
-      if (av) avatarUrl = /^https?:\/\//i.test(av) ? av : `https://ella.janitorai.com/bot-avatars/${av}?width=1200`;
+    // Prefer the catalog's exact avatar over arbitrary images in the DOM, which
+    // may include recommended characters or still be loading after navigation.
+    const av = meta.avatar || meta.profile_image || '';
+    const avatarUrl = av && (/^https?:\/\//i.test(av) ? av : `https://janitorsunite.b-cdn.net/bot-avatars/${av}?width=1200`);
+    let avatarBase64 = avatarUrl ? await downloadAvatar(page, avatarUrl) : '';
+    if (!avatarBase64) {
+      const domAvatar = await getAvatarUrl(page);
+      if (domAvatar && domAvatar !== avatarUrl) avatarBase64 = await downloadAvatar(page, domAvatar);
     }
-    const avatarBase64 = avatarUrl ? await downloadAvatar(page, avatarUrl) : '';
 
-    return { meta, ctxParts, publicLorebooks, avatarBase64 };
+    return { meta, ctxParts, publicLorebooks, avatarBase64, greetingChat, greetingError };
   }, { mode: getExtractionMode() });
 }
 
 function refreshedCharacter(rec, out) {
-  if (isCardPublic(out.meta)) return buildPublicCharacter(out.meta, out.avatarBase64);
+  if (isCardPublic(out.meta)) {
+    return buildPublicCharacter(out.meta, out.avatarBase64 || (rec.character && rec.character.avatarBase64) || rec.avatarBase64);
+  }
 
   // A catalog refresh cannot recover a hidden definition. Keep a prior prompt- or
   // chat-derived card visible until the user explicitly re-extracts it, but update
@@ -858,6 +941,9 @@ function refreshedCharacter(rec, out) {
       name: (out.meta && out.meta.name) || existing.name || '',
       avatarBase64: out.avatarBase64 || existing.avatarBase64 || '',
     };
+  }
+  if (!allowsProxy(out.meta)) {
+    return buildPartialCharacter(out.meta, out.avatarBase64, out.greetingChat, existing);
   }
   return {
     name: (out.meta && out.meta.name) || '',
@@ -888,7 +974,7 @@ app.post('/api/inspect', async (req, res) => {
     const cardPublic = isCardPublic(out.meta);
     const character = cardPublic
       ? buildPublicCharacter(out.meta, out.avatarBase64)
-      : {
+      : !allowsProxy(out.meta) ? buildPartialCharacter(out.meta, out.avatarBase64, out.greetingChat) : {
         name: (out.meta && out.meta.name) || '',
         avatarBase64: out.avatarBase64 || '',
         definitionSource: 'pending',
@@ -913,6 +999,7 @@ app.post('/api/inspect', async (req, res) => {
       cardPublic,
       character,
       publicLorebooks: out.publicLorebooks,
+      greetingError: out.greetingError,
     });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
@@ -941,7 +1028,7 @@ app.post('/api/captures/:id/refresh', async (req, res) => {
       character: refreshedCharacter(rec, out),
     });
     broadcast('capture', { id: updated.id });
-    res.json({ id: updated.id, cardPublic: updated.cardPublic });
+    res.json({ id: updated.id, cardPublic: updated.cardPublic, greetingError: out.greetingError });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
@@ -959,7 +1046,15 @@ app.post('/api/capture', async (req, res) => {
 
     const meta = rec.meta || null;
     if (!allowsProxy(meta)) {
-      return res.status(422).json({ error: proxyForbiddenError().message, code: 'PROXY_FORBIDDEN' });
+      const characterId = rec.characterId || parseCharacterId(rec.url);
+      const out = await inspectCharacter(rec.url, characterId);
+      const updated = store.refreshInspection(rec.id, {
+        ...out, url: rec.url, characterId,
+        characterName: (out.meta && out.meta.name) || rec.characterName,
+        context: out.ctxParts, cardPublic: isCardPublic(out.meta),
+        character: refreshedCharacter(rec, out),
+      });
+      return res.json({ id: updated.id, character: updated.character, partial: true, greetingError: out.greetingError });
     }
     const publicContents = publicEntryContents(rec.publicLorebooks);
     const avatarBase64 = (rec.character && rec.character.avatarBase64) || '';
@@ -1522,5 +1617,5 @@ if (require.main === module) {
 
 module.exports = {
   app, assembleResult, buildLlmContext, collectGreetings, profileDisplayName, inferMacroUserName,
-  restoreFieldFromTemplate,
+  restoreFieldFromTemplate, buildPartialCharacter, refreshedCharacter,
 };
